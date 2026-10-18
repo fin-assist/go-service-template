@@ -228,10 +228,10 @@ dedicated pass on every PR: Security and Tests.
 
 - Write all review comments in Russian (summary and inline). Identifiers and quotes stay as they are.
 - Report only verified problems with a concrete failure scenario: which caller, request or data, what goes wrong.
+  Skip style nits, naming preferences and wording of comments and docs unless the text misstates the behaviour.
 - Weigh findings by the priorities of «Principles»: missing tests first, then clarity, then security beyond the
   mandatory rules, then performance; a performance finding needs a measurement or an evident cost (an N+1, an
   unbounded load), not a guess.
-  Skip style nits, naming preferences and wording of comments and docs unless the text misstates the behaviour.
 - Post each finding as an inline comment on the changed line. The summary lists what was checked, with a
   «Безопасность» part and a «Тесты» part; «not affected» is a valid answer, with one line why.
 - Check that the PR references its YouTrack issue and updates `README.md`, this file and `docs/` when it changes
