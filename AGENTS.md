@@ -33,7 +33,9 @@ updates them in the same PR. A service made from the template rewrites the first
 
 | What | Where |
 |---|---|
-| Commands `serve`, `migrate`; wiring of adapters, usecases and handlers; the access table | `cmd/service/` (`serve.go`, `wire.go`, `migrate.go`) |
+| Commands `serve`, `migrate`: listeners, shutdown | `cmd/service/` (`serve.go`, `migrate.go`) |
+| Assembly: identity, pools, server; wiring of adapters, usecases and handlers (`wire()`), the access table (`AccessPolicy()`), migration sources | `internal/app/` (`app.go`, `wire.go`) |
+| The whole service in-process for API tests | `internal/app/apitest/` |
 | Entities and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/` |
 | gRPC server, interceptors, access table types, identity and tombstone interfaces | `internal/adapter/grpc/server/`; rules — `docs/server.md` |
@@ -83,7 +85,7 @@ prometheus client_golang, testcontainers-go, squawk. A new dependency is named i
   `status.Error`, `status.New`, `errdetails.ErrorInfo` are forbidden by the linter; an internal refusal is a bare
   code through `bare()` in the server package. A new client reaction needs a new code in `contracts` first.
 - Identity: the user of a user call is `reqctx.UserID(ctx)` (the verified `sub`), never a request field; a system
-  call takes `user_id` from the request. Every new method gets its row in `accessPolicy()`, copied from
+  call takes `user_id` from the request. Every new method gets its row in `AccessPolicy()`, copied from
   grpc-api.md 3.3; the server does not start without it.
 - Database: SQL with parameters only (`$1`), table and column names are constants. A usecase opens the transaction
   with `db.Run`; repositories take `db.Writer(ctx)` / `db.Reader(ctx)`; no calls to other services inside `Run`.
@@ -109,15 +111,27 @@ prometheus client_golang, testcontainers-go, squawk. A new dependency is named i
 
 ## Tests
 
-Every new piece of functionality is covered by automated tests in the same PR — not in a follow-up.
+Every change comes with its automated tests in the same PR — not in a follow-up. Three levels, each mandatory:
 
-- Usecases and domain → unit tests with fakes of the interfaces the usecase declares, covering the main path and
-  every edge case and branch the code handles.
-- Repositories and migrations → tests against PostgreSQL (`migratetest.DSN`), not mocks of pgx: the SQL itself is
-  what is tested. Every migration passes up → down → up (`migrations/migrations_test.go`).
-- Handlers → through a real gRPC server (bufconn) with the interceptors, so the access table, identity, validation
-  and the error mapping are part of the test; assert the status code and `ErrorInfo.reason`, not the message.
-- A bug fix comes with a test that fails without the fix and reproduces the reported case.
+- **Unit tests — all new code.** Every new or changed function or method with logic (domain rules, usecases,
+  mappers, validation, config, helpers, interceptors) has unit tests in its package: no database, no network, fakes
+  of the interfaces the code declares; the main path and every branch and error the code handles.
+- **Integration tests — all new functionality.** Every new or changed behaviour is tested against its real
+  dependencies: repositories, migrations, transactions and locks against PostgreSQL (`migratetest.DSN`), not mocks of
+  pgx — the SQL itself is what is tested; clients of other services against a fake gRPC server on bufconn
+  (retries, deadlines, metadata); jobs and the outbox through a real run. Every migration passes up → down → up
+  (`migrations/migrations_test.go`).
+- **API tests — all new functionality.** Every new or changed RPC is tested through the service's API as a caller
+  sees it: `apitest.Start(t)` runs the whole assembly (`internal/app`: interceptors, access table, handlers,
+  PostgreSQL with migrations) and the test calls it with the generated client as `bank-bff` (`apitest.User`) or
+  another service (`apitest.Caller`). Assert the status code, `ErrorInfo.reason` (`apitest.Reason`) and metadata, and
+  the response fields against the contract — not the message text. Cover the main path, every error the contract
+  lists for the method, a foreign caller, another user's object and a deleted user.
+
+Also:
+
+- A bug fix comes with a test that fails without the fix and reproduces the reported case, at the lowest level that
+  shows it, plus an API test when the caller saw the bug.
 - Security-relevant behaviour (foreign caller, another user's object, deleted user, consent gates, hostile input)
   has negative tests: what must not happen is asserted — the handler did not run, no row was written, nothing leaked.
 - Tests assert behaviour; a test that only executes lines or asserts on a fake it set up itself is not coverage.
@@ -191,7 +205,7 @@ it. Check:
 - Object access: every query by an object ID is scoped by the user (`WHERE user_id = $n` with the user from
   `reqctx.UserID` or the system call's `user_id`); another user's object gives `NOT_FOUND`, not its data or a
   different error that confirms it exists (IDOR / BOLA).
-- Identity: the user never comes from a request field in a user call; a new method has its row in `accessPolicy()`
+- Identity: the user never comes from a request field in a user call; a new method has its row in `AccessPolicy()`
   matching grpc-api.md 3.3 (callers and model); hints `x-client-ip`, `x-client-version`, `x-read-primary` are used
   only as the server package sets them; `x-client-version` never decides access or limits.
 - Errors: client-facing errors only through `finerr`; `status.message`, `error` details and logs contain no SQL,
@@ -226,7 +240,8 @@ each behaviour the PR adds or changes:
    `UNAVAILABLE`, a database error, a cancelled context or an expired deadline); boundary values (zero, negative and
    very large amounts, dates at day, month and year boundaries, time zones, empty and maximal lists, long texts);
    repeated and concurrent calls (an idempotent retry with the same key, two writers at once); a deleted user.
-2. Map each case to the test that covers it (see Tests above).
+2. Map each case to the test that covers it and check all three levels of Tests above: new code without a unit test,
+   new functionality without an integration test or without an API test is a finding.
 3. Post a finding for an uncovered case only when it is reachable in the changed code and its behaviour is added or
    changed by the PR; name the concrete case and the layer that should cover it. The list in step 1 is a prompt, not
    a checklist to report item by item; a case not worth a test is fine when the PR says why.
@@ -244,7 +259,8 @@ security-relevant behaviour has negative tests.
 
 ### Checklist
 
-- A new gRPC method has its row in `accessPolicy()` matching grpc-api.md 3.3, and a handler test through the server.
+- New code has unit tests; new functionality has integration tests and API tests (`apitest`), see Tests.
+- A new gRPC method has its row in `AccessPolicy()` matching grpc-api.md 3.3.
 - A new client-facing error goes through `finerr`; a new reason or metadata key exists in `contracts` first.
 - A new query by object ID is scoped by the user and has a test with another user's ID.
 - A new effect with an idempotency record or an outbox row is written in one `db.Run`, and a retry test shows it is

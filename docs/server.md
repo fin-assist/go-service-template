@@ -10,7 +10,7 @@
 2. **Логи и метрики** — после обработчика (см. «Наблюдаемость»).
 3. **Перехват паники** — голый `INTERNAL`, стек в лог.
 4. **Сервисный токен** `x-service-authorization` → имя вызывающего. Нет или неверный — голый `UNAUTHENTICATED`.
-5. **Таблица доступа** (`accessPolicy()` в `cmd/service/wire.go`, копия таблицы grpc-api.md 3.3). Метода нет в таблице или вызывающего нет в правиле — голый `PERMISSION_DENIED`, строка в лог уровня `ERROR` и метрика `finassist_grpc_denied_total{cause="caller_not_allowed"}` (на неё — алерт). Сервер **не стартует**, если у зарегистрированного метода нет правила.
+5. **Таблица доступа** (`AccessPolicy()` в `internal/app/wire.go`, копия таблицы grpc-api.md 3.3). Метода нет в таблице или вызывающего нет в правиле — голый `PERMISSION_DENIED`, строка в лог уровня `ERROR` и метрика `finassist_grpc_denied_total{cause="caller_not_allowed"}` (на неё — алерт). Сервер **не стартует**, если у зарегистрированного метода нет правила.
 6. **Подсказки `bank-bff`** — `x-client-ip`, `x-client-version`, `x-read-primary` берутся только от `bank-bff`; от других вызывающих игнорируются.
 7. **Токен пользователя** `authorization` — по модели метода:
 
@@ -36,7 +36,7 @@ Health (`grpc.health.v1`) и reflection (только `ENV=dev`) открыты 
 - `AUTH_MODE=insecure-dev` (только `ENV=dev`): токены `dev:<имя>` — `Bearer dev:bank-bff` в `x-service-authorization`, `Bearer dev:<user_id>` в `authorization`. Для локального запуска и тестов.
 - `AUTH_MODE=verify` (по умолчанию): `serve` не стартует с ошибкой про FIN-119. Сервис не работает с непроверенными идентичностями ни на стенде, ни в проде.
 
-Tombstone (FIN-110) — интерфейс `Tombstones`; до библиотеки в шаблоне `NoTombstones`, сервис данных обязан заменить его (`tombstones()` в `cmd/service/serve.go`).
+Tombstone (FIN-110) — интерфейс `Tombstones`; до библиотеки в шаблоне `NoTombstones`, сервис данных обязан заменить его (`tombstones()` в `internal/app/app.go`).
 
 ## Сервер
 

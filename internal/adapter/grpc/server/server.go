@@ -110,10 +110,14 @@ func (s *Server) SetServing(ok bool) {
 	s.health.SetServingStatus("", st)
 }
 
-// Serve checks that the access table covers every registered method and serves lis
-// until Shutdown.
+// Check reports whether the access table is valid and covers every registered method.
+// Serve calls it; tests call it to fail with the reason instead of a server that never
+// starts.
+func (s *Server) Check() error { return s.deps.Policy.validate(s.grpc) }
+
+// Serve checks the access table (Check) and serves lis until Shutdown.
 func (s *Server) Serve(lis net.Listener) error {
-	if err := s.deps.Policy.validate(s.grpc); err != nil {
+	if err := s.Check(); err != nil {
 		return err
 	}
 	return s.grpc.Serve(lis)

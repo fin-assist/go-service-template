@@ -8,20 +8,9 @@ import (
 	"strconv"
 
 	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate"
+	"github.com/fin-assist/go-service-template/internal/app"
 	"github.com/fin-assist/go-service-template/internal/config"
-	"github.com/fin-assist/go-service-template/migrations"
 )
-
-// sources lists the migration sources in the order they are applied: libraries first
-// (each with its own version table), then the service. A library exposes its files and
-// table; add it here when the service starts using it, for example:
-//
-//	{Name: "outbox", Table: "outbox_schema_migrations", FS: outbox.Migrations},
-func sources() []migrate.Source {
-	return []migrate.Source{
-		{Name: "service", Table: "schema_migrations", FS: migrations.FS},
-	}
-}
 
 func runMigrate(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
@@ -31,7 +20,7 @@ func runMigrate(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	all := sources()
+	all := app.MigrationSources()
 
 	switch args[0] {
 	case "up":

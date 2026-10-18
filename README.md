@@ -12,7 +12,7 @@
 1. Создать репозиторий из шаблона (GitHub → «Use this template»).
 2. Заменить модуль: `go mod edit -module github.com/fin-assist/<service>` и пути импорта (`grep -rl go-service-template | xargs sed -i 's#fin-assist/go-service-template#fin-assist/<service>#g'`).
 3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service`, имя в `compose.yaml`, `Makefile`, `Dockerfile`.
-4. Заполнить `accessPolicy()` строками своего сервиса из таблицы grpc-api.md 3.3 и зарегистрировать обработчики в `wire()` (`cmd/service/wire.go`).
+4. Заполнить `AccessPolicy()` строками своего сервиса из таблицы grpc-api.md 3.3 и зарегистрировать обработчики в `wire()` (`internal/app/wire.go`).
 5. Сервис с данными пользователей — заменить `NoTombstones` на библиотеку FIN-110.
 6. Секреты репозитория: `CLAUDE_CODE_OAUTH_TOKEN` (ревью `@claude`), `GO_MODULES_TOKEN`, если подключаются приватные модули fin-assist. Установить Claude GitHub App и Codex.
 7. Обновить README и `AGENTS.md` под сервис.
@@ -20,7 +20,9 @@
 ## Раскладка
 
 ```
-cmd/service/                       main: serve and migrate commands, wiring (wire.go), access table
+cmd/service/                       main: serve and migrate commands, listeners, shutdown
+internal/app/                      assembly: identity, pools, server, wire() (handlers, clients, jobs), access table, migration sources
+internal/app/apitest/              the whole service in-process for API tests
 internal/domain/                   entities and invariants, no infrastructure imports
 internal/<feature>/                usecases; interfaces of repositories and clients they need
 internal/adapter/grpc/server/      gRPC server, interceptors, access table types, identity interfaces
