@@ -58,7 +58,7 @@ CI (`.github/workflows/ci.yml`):
 
 | Job | Что |
 |---|---|
-| `go` | `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций |
+| `go` | `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций; тесты скриптов; покрытие изменённых строк — в сводке прогона и комментарием в PR |
 | `lint` | golangci-lint (`.golangci.yml`), в том числе `forbidigo` против обхода `finerr` |
 | `image` | сборка образа и запуск бинаря в нём |
 | `migrations` (PR) | существующие миграции не изменены, squawk по новым |
@@ -68,6 +68,18 @@ CI (`.github/workflows/ci.yml`):
 ```bash
 make test   # Docker for testcontainers, or TEST_DATABASE_URL=postgres://... to use your PostgreSQL
 make lint
+```
+
+### Покрытие изменённых строк
+
+Цель — не ниже **80 %** изменённых исполняемых строк production-кода (без `_test.go` и `testdata/`). CI считает его скриптом `scripts/coverage-diff.py` по профилю `go test -coverpkg=./... -coverprofile=cover.out` и диффу PR против базы (`base...HEAD`) и публикует таблицу в сводке прогона и одним комментарием в PR, который обновляется на каждом пуше. Ничего не падает: порог проверяется на ревью. Непокрытые строки перечисляются в описании PR («Как проверено») с причиной — например, ветка ошибки, которую не вызвать без отказа ОС.
+
+Строка считается исполняемой, если её содержит блок покрытия Go: объявления, комментарии и пустые строки не считаются. С `-coverpkg=./...` строка покрыта, тесты какого бы пакета её ни выполнили.
+
+```bash
+make cover   # cover.out and the table against origin/main
+python3 scripts/coverage-diff.py                 # project totals
+python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
 Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.

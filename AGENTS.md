@@ -61,6 +61,9 @@ prometheus client_golang, testcontainers-go, squawk. A new dependency is named i
   point the tests at it: `TEST_DATABASE_URL='postgres://postgres@localhost:<port>/postgres?sslmode=disable' make test`.
   Without either, integration tests are skipped locally and fail in CI (`CI` set) — a skip is not a pass.
 - `make lint` runs the pinned golangci-lint through `go run`; no separate install.
+- `make cover` (or `go test -coverpkg=./... -coverprofile=cover.out ./...`) needs the `covdata` tool, which a
+  toolchain downloaded by `GOTOOLCHAIN` lacks ("no such tool covdata"): build it once with
+  `T=$(go env GOTOOLDIR); chmod u+w "$T"; go build -o "$T/covdata" cmd/covdata`.
 - The image needs Docker; without it say in the PR that the image was built only by the CI job `image`.
 - Every test or lint run gets a timeout (`timeout 600 make test` or the tool's own): a hung run blocks the session.
 - A local `serve` for a smoke check: `ENV=dev AUTH_MODE=insecure-dev SERVICE_NAME=service DB_PRIMARY_DSN=… make run`;
@@ -115,12 +118,15 @@ Every new piece of functionality is covered by automated tests in the same PR �
   has negative tests: what must not happen is asserted — the handler did not run, no row was written, nothing leaked.
 - Tests assert behaviour; a test that only executes lines or asserts on a fake it set up itself is not coverage.
   Run with `-race`; no sleeps for synchronisation — wait on a channel or a condition with a deadline.
+- The measurable check is coverage of changed lines: at least 80 % of changed executable lines of production code
+  (`make cover`, README «Покрытие изменённых строк»; CI posts the table in the PR). Uncovered changed lines are listed
+  in the PR («Как проверено») with the reason; an uncovered line without a reason is a review finding.
 
 ## Checks
 
-CI (table in `README.md`): `go vet`, `go test -race` with PostgreSQL 18 in Docker, golangci-lint, image build, and on
-PRs the migration checks (existing files unchanged, squawk on new ones). Run `make test` and `make lint` before
-pushing.
+CI (table in `README.md`): `go vet`, `go test -race` with PostgreSQL 18 in Docker and coverage of changed lines,
+golangci-lint, image build, and on PRs the migration checks (existing files unchanged, squawk on new ones). Run
+`make test` (or `make cover`) and `make lint` before pushing.
 
 ## Workflow
 
@@ -207,7 +213,8 @@ it. Check:
 
 ### Tests
 
-The criterion is not a percentage of lines but whether the use cases of the changed functionality are covered. For
+The criterion is not a percentage of lines but whether the use cases of the changed functionality are covered; the
+80 % changed-line target in Tests is the author's minimum, and meeting it does not settle this check. For
 each behaviour the PR adds or changes:
 
 1. List its use cases from the code, the contract and the issue: the main path; alternative paths; every error a
@@ -240,3 +247,4 @@ security-relevant behaviour has negative tests.
   not applied twice.
 - A new migration follows `docs/migrations.md` and passes squawk and up → down → up.
 - A new metric has bounded labels and is listed in `docs/server.md`; a new setting is listed in `docs/config.md`.
+- Changed lines the coverage comment of the PR (posted by CI) shows as uncovered have a reason in the PR.

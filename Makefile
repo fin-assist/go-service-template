@@ -3,7 +3,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 BIN := bin/service
 export GOPRIVATE := github.com/fin-assist/*
 
-.PHONY: build test lint fmt run migrate image up down
+.PHONY: build test cover lint fmt run migrate image up down
 
 build: ## build the binary into bin/
 	go build -trimpath -o $(BIN) ./cmd/service
@@ -11,6 +11,10 @@ build: ## build the binary into bin/
 test: ## unit and integration tests (Docker or TEST_DATABASE_URL)
 	go vet ./...
 	go test -race -count=1 ./...
+
+cover: ## tests with a coverage profile, then coverage of the lines changed against origin/main
+	go test -race -count=1 -coverpkg=./... -coverprofile=cover.out ./...
+	python3 scripts/coverage-diff.py --base origin/main
 
 lint: ## golangci-lint of the pinned version
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
