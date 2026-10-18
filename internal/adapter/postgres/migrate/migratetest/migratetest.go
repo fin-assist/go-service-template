@@ -27,7 +27,7 @@ import (
 )
 
 // DefaultImage is the PostgreSQL image of the test container; override with TEST_POSTGRES_IMAGE.
-const DefaultImage = "postgres:17-alpine"
+const DefaultImage = "postgres:18-alpine"
 
 var (
 	adminOnce sync.Once
