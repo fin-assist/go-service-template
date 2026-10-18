@@ -20,6 +20,10 @@ updates them in the same PR. A service made from the template rewrites the first
   module `github.com/fin-assist/contracts/gen/go` (messages, gRPC, `finerr`) at a tag `gen/go/vX.Y.Z`. A service
   never defines its own `.proto`, error codes or REST fields: a change goes to `contracts` first (its own FIN issue
   and PR), then the service bumps the module.
+- Shared code: Go libraries made from `fin-assist/go-library-template` (FIN-118) — `go-identity`, `go-idempotency`,
+  `go-outbox`, `go-tombstone`. The service imports them at tagged versions and wires them in `internal/app` by the
+  «Внедрение» section of their README; versions and compatibility — `docs/releasing.md` of the library template.
+  Code that more than one service needs goes into a library (its own FIN issue), not into a copy here.
 - Architecture, MVP scope, product decisions: Confluence PF (https://finassist.atlassian.net/wiki/spaces/PF),
   «Архитектура» (including «Миграции и доступ к БД» and «Репозитории и структура кода»). When the docs here and the
   contracts differ, the contracts and the owner's latest decision win; say so in the PR.
@@ -50,13 +54,15 @@ updates them in the same PR. A service made from the template rewrites the first
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
 | Image, local run, stand | `Dockerfile`, `compose.yaml`, `Makefile`, `deploy/systemd/` |
 | CI, lint | `.github/workflows/ci.yml`, `.golangci.yml`, `.squawk.toml` |
+| Dependency updates | `renovate.json` |
 | PR review by Claude | `.github/workflows/claude.yml` |
 
 ### Stack
 
 Versions are in `go.mod` (Go toolchain included), `.github/workflows/ci.yml` and `Makefile` (golangci-lint), `compose.yaml`
 and `migratetest.DefaultImage` (PostgreSQL). Main pieces: grpc-go, protobuf, protovalidate, pgx v5, golang-migrate,
-prometheus client_golang, testcontainers-go, squawk. A new dependency is named in the PR with why it is needed.
+prometheus client_golang, testcontainers-go, squawk; the fin-assist libraries above. A new dependency is named in
+the PR with why it is needed.
 
 ## Build in an agent container
 
@@ -188,6 +194,10 @@ golangci-lint, image build, and on PRs the migration checks (existing files unch
 
 - Branches: `<kind>/<slug>` — `feature/…`, `fix/…`, `tooling/…`; a PR targets `main`. Commits: imperative English
   subject (`Add …`, `Fix …`, `Address review: …`).
+- Dependency updates come from Renovate (`renovate.json`; README «Библиотеки и обновления»): its `renovate/…`
+  branches are the exception to the branch names and need no YouTrack issue while they change nothing but
+  dependencies. When an update is incompatible (CI fails, «Несовместимо» in the library's CHANGELOG), the fixes go
+  into the same branch, and the PR gets the issue of that work.
 - PR title and description in Russian: what changed and why, deviations from the contracts or docs, how it was
   checked. A PR for a single issue starts its title with the key (`FIN-42 Поиск операций по сумме`); a PR for several
   issues lists all of them in the description, each linked (`https://finassist.youtrack.cloud/issue/FIN-<n>`).

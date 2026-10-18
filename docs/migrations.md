@@ -56,11 +56,11 @@ service migrate force <source> <version>  # выставить версию и �
 Библиотеки с таблицами (идемпотентность FIN-78, outbox FIN-109, tombstone FIN-110) приносят свои миграции. У каждой — **своя таблица версий**, поэтому номера библиотеки и сервиса не пересекаются. Источники перечислены в `internal/app/wire.go` (`MigrationSources()`) и применяются по порядку: сначала библиотеки, затем сервис. Миграции сервиса могут ссылаться на таблицы библиотек, наоборот — нет.
 
 ```go
-{Name: "outbox", Table: "outbox_schema_migrations", FS: outbox.Migrations},
+{Name: outbox.MigrationsName, Table: outbox.MigrationsTable, FS: outbox.Migrations},
 {Name: "service", Table: "schema_migrations", FS: migrations.FS},
 ```
 
-Библиотека отдаёт `fs.FS` со своими файлами по тем же правилам и в своих тестах вызывает `migratetest.CheckUpDownUp` (сейчас — пакет шаблона; при выносе библиотек — общий пакет).
+Библиотека отдаёт `Migrations` (`fs.FS` со своими файлами по тем же правилам), `MigrationsName` и `MigrationsTable` (`<библиотека>_schema_migrations`), а в своих тестах проходит «вверх → вниз → вверх» пакетом `internal/pgtest` — копией `migratetest` в [`fin-assist/go-library-template`](https://github.com/fin-assist/go-library-template). Правило выпущенных миграций библиотеки — в её `docs/releasing.md`, «Миграции»: файл не меняется, несовместимое изменение схемы — в два выпуска.
 
 ## Изменение схемы без простоя
 

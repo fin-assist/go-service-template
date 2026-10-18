@@ -24,7 +24,7 @@ func AccessPolicy() server.Policy {
 // first (each with its own version table), then the service. A library exposes its files
 // and table; add it here when the service starts using it, for example:
 //
-//	{Name: "outbox", Table: "outbox_schema_migrations", FS: outbox.Migrations},
+//	{Name: outbox.MigrationsName, Table: outbox.MigrationsTable, FS: outbox.Migrations},
 func MigrationSources() []migrate.Source {
 	return []migrate.Source{
 		{Name: "service", Table: "schema_migrations", FS: migrations.FS},
