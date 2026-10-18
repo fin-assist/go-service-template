@@ -5,24 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strconv"
-	"time"
 
 	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate"
-	"github.com/fin-assist/go-service-template/migrations"
+	"github.com/fin-assist/go-service-template/internal/app"
+	"github.com/fin-assist/go-service-template/internal/config"
 )
-
-// sources lists the migration sources in the order they are applied: libraries first
-// (each with its own version table), then the service. A library exposes its files and
-// table; add it here when the service starts using it, for example:
-//
-//	{Name: "outbox", Table: "outbox_schema_migrations", FS: outbox.Migrations},
-func sources() []migrate.Source {
-	return []migrate.Source{
-		{Name: "service", Table: "schema_migrations", FS: migrations.FS},
-	}
-}
 
 func runMigrate(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
@@ -32,7 +20,7 @@ func runMigrate(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	all := sources()
+	all := app.MigrationSources()
 
 	switch args[0] {
 	case "up":
@@ -54,7 +42,7 @@ func runMigrate(ctx context.Context, args []string, out io.Writer) error {
 			if s.Dirty {
 				dirty = " (dirty)"
 			}
-			fmt.Fprintf(out, "%s\t%d%s\n", s.Source, s.Version, dirty)
+			_, _ = fmt.Fprintf(out, "%s\t%d%s\n", s.Source, s.Version, dirty)
 		}
 		return nil
 
@@ -80,36 +68,15 @@ func runMigrate(ctx context.Context, args []string, out io.Writer) error {
 	}
 }
 
-// migrateConfig reads the configuration from the environment:
-//
-//	DB_PRIMARY_DSN             DSN of the primary (required)
-//	MIGRATE_LOCK_TIMEOUT       lock_timeout of DDL statements, default 5s
-//	MIGRATE_STATEMENT_TIMEOUT  statement_timeout, default 15m
-//	MIGRATE_WAIT_TIMEOUT       wait for a concurrent run of the same source, default 15m
+// migrateConfig reads the configuration from the environment: DB_PRIMARY_DSN (or _FILE) and
+// the MIGRATE_* timeouts, declared with their defaults in internal/config (docs/config.md).
 func migrateConfig() (migrate.Config, error) {
-	dsn := os.Getenv("DB_PRIMARY_DSN")
-	if dsn == "" {
-		return migrate.Config{}, fmt.Errorf("DB_PRIMARY_DSN is not set")
+	c, err := config.LoadMigrate()
+	if err != nil {
+		return migrate.Config{}, err
 	}
-	cfg := migrate.DefaultConfig(dsn)
+	cfg := migrate.DefaultConfig(c.PrimaryDSN)
 	cfg.Logger = slog.Default()
-	for _, d := range []struct {
-		env string
-		dst *time.Duration
-	}{
-		{"MIGRATE_LOCK_TIMEOUT", &cfg.LockTimeout},
-		{"MIGRATE_STATEMENT_TIMEOUT", &cfg.StatementTimeout},
-		{"MIGRATE_WAIT_TIMEOUT", &cfg.WaitTimeout},
-	} {
-		v := os.Getenv(d.env)
-		if v == "" {
-			continue
-		}
-		parsed, err := time.ParseDuration(v)
-		if err != nil || parsed <= 0 {
-			return migrate.Config{}, fmt.Errorf("%s: %q is not a positive duration", d.env, v)
-		}
-		*d.dst = parsed
-	}
+	cfg.LockTimeout, cfg.StatementTimeout, cfg.WaitTimeout = c.LockTimeout, c.StatementTimeout, c.WaitTimeout
 	return cfg, nil
 }

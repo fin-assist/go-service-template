@@ -161,7 +161,7 @@ func TestWaitTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtext('fin-assist/migrate/schema_migrations'))`); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func exists(t *testing.T, dsn, table string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	var ok bool
 	if err := conn.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok); err != nil {
 		t.Fatal(err)

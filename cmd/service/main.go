@@ -1,5 +1,6 @@
-// Command service is the binary of the service: the gRPC server (FIN-117) and the
-// "migrate" command that applies database migrations before a rollout (FIN-115).
+// Command service is the binary of the service: "serve" runs the gRPC server with its
+// background jobs (FIN-117), "migrate" applies database migrations before a rollout
+// (FIN-115). Configuration comes from the environment (docs/config.md).
 //
 // Rename the directory to the service name (cmd/user, cmd/bank-bff, ...) in a new service.
 package main
@@ -13,6 +14,9 @@ import (
 	"os/signal"
 	"syscall"
 )
+
+// version is set at build time (-X main.version=...).
+var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -37,6 +41,7 @@ type usageError string
 func (e usageError) Error() string { return string(e) }
 
 const usage = `usage:
+  service serve                            run the gRPC server, /metrics and background jobs
   service migrate up                       apply pending migrations of all sources
   service migrate version                  print applied versions
   service migrate down <source> <steps>    roll back the last steps of one source
@@ -47,6 +52,11 @@ func run(ctx context.Context, args []string) error {
 		return usageError(usage)
 	}
 	switch args[0] {
+	case "serve":
+		if len(args) != 1 {
+			return usageError(usage)
+		}
+		return runServe(ctx)
 	case "migrate":
 		return runMigrate(ctx, args[1:], os.Stdout)
 	default:
