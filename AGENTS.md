@@ -20,6 +20,10 @@ updates them in the same PR. A service made from the template rewrites the first
   «Архитектура» (including «Миграции и доступ к БД» and «Репозитории и структура кода»). When the docs here and the
   contracts differ, the contracts and the owner's latest decision win; say so in the PR.
 - Every change goes through a YouTrack issue (`FIN-<n>`, finassist.youtrack.cloud) referenced in the PR.
+- Mismatches between the contracts, Confluence and this repository are expected. Resolve them in favour of the
+  contracts and the owner's latest decision, say so in the PR, and propose (not impose) engineering changes; keep them
+  non-radical. The owner writes backend code himself and is strong in PostgreSQL: schemas and queries are proposed
+  with arguments, not decided for him.
 
 ## Repository map
 
@@ -42,6 +46,26 @@ updates them in the same PR. A service made from the template rewrites the first
 | CI, lint | `.github/workflows/ci.yml`, `.golangci.yml`, `.squawk.toml` |
 | PR review by Claude | `.github/workflows/claude.yml` |
 
+### Stack
+
+Versions are in `go.mod` (Go toolchain included), `.github/workflows/ci.yml` and `Makefile` (golangci-lint), `compose.yaml`
+and `migratetest.DefaultImage` (PostgreSQL). Main pieces: grpc-go, protobuf, protovalidate, pgx v5, golang-migrate,
+prometheus client_golang, testcontainers-go, squawk. A new dependency is named in the PR with why it is needed.
+
+## Build in an agent container
+
+- Go: the toolchain from `go.mod` is downloaded by `GOTOOLCHAIN=auto` (the default) on the first `go` command.
+- `fin-assist/*` modules come from git, not the proxy: `GOPRIVATE=github.com/fin-assist/*` (set by `Makefile`; export
+  it for plain `go` commands).
+- Docker is usually absent in an agent container, so testcontainers cannot start PostgreSQL. Run a local server and
+  point the tests at it: `TEST_DATABASE_URL='postgres://postgres@localhost:<port>/postgres?sslmode=disable' make test`.
+  Without either, integration tests are skipped locally and fail in CI (`CI` set) — a skip is not a pass.
+- `make lint` runs the pinned golangci-lint through `go run`; no separate install.
+- The image needs Docker; without it say in the PR that the image was built only by the CI job `image`.
+- Every test or lint run gets a timeout (`timeout 600 make test` or the tool's own): a hung run blocks the session.
+- A local `serve` for a smoke check: `ENV=dev AUTH_MODE=insecure-dev SERVICE_NAME=service DB_PRIMARY_DSN=… make run`;
+  `/readyz` on `HTTP_ADDR` answers when the database does.
+
 ## Writing code
 
 - Code, comments, identifiers, commit messages — English. `docs/*.md`, `README.md`, PR title and description —
@@ -59,11 +83,38 @@ updates them in the same PR. A service made from the template rewrites the first
   Migrations follow `docs/migrations.md` (two releases for an incompatible change, `CONCURRENTLY` alone in a file).
 - Clients of other services: `client.Dial` with `Retry` listing only reads and methods idempotent by construction;
   the context carries the deadline.
+- Time: "now" in business logic comes from an injected clock (`func() time.Time` or an interface passed by `wire()`),
+  never `time.Now()` inside a usecase or repository query: tests pin the date, and month and year boundaries must be
+  testable. Calendar days and months are computed in the user's profile time zone (grpc-api.md 8), never in
+  `time.Local` or the server's zone; `now()` in SQL only for technical columns (`created_at`, outbox schedule).
+  Durations for metrics and timeouts may use `time.Now()` / `time.Since`.
+- Money: integer minor units (`int64`, `_minor`), never floats; the sign follows the contract.
+- Tolerance of what the service does not know yet: an enum value of another service it does not know (newer
+  producer) follows the rule of that field in grpc-api.md 8 — hide the field or fail the call with an alert — never
+  a panic or a silent default that changes meaning; an unknown field is ignored (protobuf does it). A new enum
+  value or error metadata key follows the rollout order of grpc-api.md 5.1 and 8.
+- Dev-only hooks — `AUTH_MODE=insecure-dev`, dev verifiers and tokens, reflection, test helpers — stay unreachable
+  outside `ENV=dev`: config rejects them, and code must not add another way around it.
 - Logs: `slog` `*Context` methods; no tokens, DSNs, statement contents or assistant dialogue in logs or errors.
   Metric labels: bounded values only — never `user_id`, an operation ID or free text.
-- Tests: every usecase, handler and repository change comes with tests in the same PR; repositories and migrations
-  run against PostgreSQL (`migratetest.DSN`), not mocks. A refused or failing path (foreign caller, invalid input,
-  not found, database error) is a scenario too.
+- Document in moderation: a doc comment on exported identifiers of packages others use, comments where the logic is
+  not obvious (accounting rules, idempotency, locks, transaction boundaries), not on every function.
+
+## Tests
+
+Every new piece of functionality is covered by automated tests in the same PR — not in a follow-up.
+
+- Usecases and domain → unit tests with fakes of the interfaces the usecase declares, covering the main path and
+  every edge case and branch the code handles.
+- Repositories and migrations → tests against PostgreSQL (`migratetest.DSN`), not mocks of pgx: the SQL itself is
+  what is tested. Every migration passes up → down → up (`migrations/migrations_test.go`).
+- Handlers → through a real gRPC server (bufconn) with the interceptors, so the access table, identity, validation
+  and the error mapping are part of the test; assert the status code and `ErrorInfo.reason`, not the message.
+- A bug fix comes with a test that fails without the fix and reproduces the reported case.
+- Security-relevant behaviour (foreign caller, another user's object, deleted user, consent gates, hostile input)
+  has negative tests: what must not happen is asserted — the handler did not run, no row was written, nothing leaked.
+- Tests assert behaviour; a test that only executes lines or asserts on a fake it set up itself is not coverage.
+  Run with `-race`; no sleeps for synchronisation — wait on a channel or a condition with a deadline.
 
 ## Checks
 
@@ -91,7 +142,13 @@ pushing.
 
   - `@claude` — `.github/workflows/claude.yml` (runs from the default branch), Claude Fable 5.1
     (`claude-fable-5-1`). Needs the Claude GitHub App and the `CLAUDE_CODE_OAUTH_TOKEN` secret.
-  - `@codex` — the Codex GitHub integration under the owner's ChatGPT subscription.
+  - `@codex` — the Codex GitHub integration under the owner's ChatGPT subscription. Its model is chosen by OpenAI
+    and cannot be pinned from here; a pinned model would need the OpenAI API with per-token billing, which was
+    declined (FIN-103).
+  - A review is requested only once `.github/workflows/claude.yml` is on `main`: comment-triggered workflows run
+    from the default branch.
+  - Replies in threads and other comments never mention `@codex` or `@claude`: any mention with text starts them
+    again.
 - Waiting for the review: react to the PR's GitHub events when the session receives them; otherwise check 3 minutes
   after the request, then every 2 minutes. A reviewer has answered when it posted its review or summary for the
   latest commit; for Codex (`chatgpt-codex-connector[bot]`) «Didn't find any major issues» or a 👍 without a comment
@@ -138,14 +195,34 @@ it. Check:
 - Transactions: an effect and its idempotency record or outbox row are written in one `db.Run`; no external call
   inside `Run`; a deleted user's data is not written back (tombstone).
 - Clients: no user token forwarded to another service; retries only for reads and idempotent methods.
+- Consent: a service that sends user data to the LLM checks the assistant consent first; an account is created only
+  after the personal data consent; revoking a consent or deleting the account removes data as the contract says.
+- Dev and test hooks (`insecure-dev`, dev verifiers, reflection, fixtures) cannot be enabled in `stage` or `prod`.
+- Statement files and other uploads: size, element count and nesting depth are bounded; OFX 2.x (XML) is parsed with
+  DTD and external entities disabled; a hostile file ends in a handled error, not a panic, a hang or memory growth.
+- Trust boundaries: limits, quotas and permissions are enforced here, never left to the client or to `bank-bff`
+  alone; `x-client-version` never decides access.
+- Secrets in the repository: no real keys, tokens or DSNs with passwords (compose uses throwaway local ones).
+- New dependencies: flag a new library that gets network, storage or data access, so the owner decides on it.
 
 ### Tests
 
-- Every changed behaviour has a test in the same PR: usecase rules, handler mapping of errors, repository queries
-  against PostgreSQL, refused paths (foreign caller, invalid input, not found, another user's object).
-- A migration passes the up → down → up check; an irreversible step is marked as `docs/migrations.md` says.
-- A bug fix comes with a test that fails without the fix.
-- A finding names the scenario that is not covered and why it matters, not a coverage percentage.
+The criterion is not a percentage of lines but whether the use cases of the changed functionality are covered. For
+each behaviour the PR adds or changes:
+
+1. List its use cases from the code, the contract and the issue: the main path; alternative paths; every error a
+   caller can reach (validation, not found, another user's object, consent missing, limit exceeded, a peer
+   `UNAVAILABLE`, a database error, a cancelled context or an expired deadline); boundary values (zero, negative and
+   very large amounts, dates at day, month and year boundaries, time zones, empty and maximal lists, long texts);
+   repeated and concurrent calls (an idempotent retry with the same key, two writers at once); a deleted user.
+2. Map each case to the test that covers it (see Tests above).
+3. Post a finding for an uncovered case only when it is reachable in the changed code and its behaviour is added or
+   changed by the PR; name the concrete case and the layer that should cover it. The list in step 1 is a prompt, not
+   a checklist to report item by item; a case not worth a test is fine when the PR says why.
+
+Also check that a test would fail if its case broke, that a bug fix's test reproduces the reported case, that every
+migration passes up → down → up (an irreversible step marked as `docs/migrations.md` says), and that
+security-relevant behaviour has negative tests.
 
 ### Consistency
 
@@ -153,3 +230,13 @@ it. Check:
 - Names follow the existing ones; no second way to do what a package here already does (transactions, clients,
   config, logging).
 - Metric labels stay bounded; a new metric has a help text and is listed in `docs/server.md`.
+
+### Checklist
+
+- A new gRPC method has its row in `accessPolicy()` matching grpc-api.md 3.3, and a handler test through the server.
+- A new client-facing error goes through `finerr`; a new reason or metadata key exists in `contracts` first.
+- A new query by object ID is scoped by the user and has a test with another user's ID.
+- A new effect with an idempotency record or an outbox row is written in one `db.Run`, and a retry test shows it is
+  not applied twice.
+- A new migration follows `docs/migrations.md` and passes squawk and up → down → up.
+- A new metric has bounded labels and is listed in `docs/server.md`; a new setting is listed in `docs/config.md`.
