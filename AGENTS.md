@@ -8,6 +8,10 @@ file is the orientation map: read it and `README.md` first, then open only what 
 
 A PR that changes what this file, `README.md` or `docs/` say (layout, commands, CI checks, conventions, process)
 updates them in the same PR. A service made from the template rewrites the first paragraph for itself.
+- Blocks between `<!-- generated:… -->` markers are produced from code; do not edit them by hand. The tables of
+  `docs/config.md` come from `Vars` in `internal/config/vars.go`: a new variable or default is a line there, then
+  `go test ./internal/config -run TestDocIsCurrent -update`. `go test` fails on a stale table, on a variable read
+  but not declared, and on one declared but never read.
 
 ## Where things are decided
 
@@ -39,7 +43,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | SQL migrations (embedded) | `migrations/`; rules — `docs/migrations.md` |
 | Clients of other services, service token source | `internal/adapter/client/` |
 | Background jobs | `internal/worker/` |
-| Configuration | `internal/config/`; variables — `docs/config.md` |
+| Configuration: every variable with its default and description | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
 | Request-scoped values (request ID, caller, user, bank-bff hints) | `internal/reqctx/` |
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
 | Image, local run, stand | `Dockerfile`, `compose.yaml`, `Makefile`, `deploy/systemd/` |
@@ -246,5 +250,6 @@ security-relevant behaviour has negative tests.
 - A new effect with an idempotency record or an outbox row is written in one `db.Run`, and a retry test shows it is
   not applied twice.
 - A new migration follows `docs/migrations.md` and passes squawk and up → down → up.
-- A new metric has bounded labels and is listed in `docs/server.md`; a new setting is listed in `docs/config.md`.
+- A new metric has bounded labels and is listed in `docs/server.md`; a new setting is declared in `Vars` and the
+  tables of `docs/config.md` are regenerated, not edited by hand.
 - Changed lines the coverage comment of the PR (posted by CI) shows as uncovered have a reason in the PR.

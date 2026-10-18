@@ -87,45 +87,67 @@ type AuthConfig struct {
 // Load reads the configuration from the process environment.
 func Load() (Config, error) { return load(os.Getenv, os.ReadFile, os.Environ) }
 
-// Secret reads one secret by the same rule as Load: VAR or the file named by VAR_FILE.
-// It is for commands that need a single setting, such as migrate.
-func Secret(name string) (string, error) {
-	r := reader{getenv: os.Getenv, readFile: os.ReadFile}
-	v := r.secret(name)
-	return v, errors.Join(r.errs...)
+// MigrateConfig is the configuration of the migrate command.
+type MigrateConfig struct {
+	PrimaryDSN       string
+	LockTimeout      time.Duration
+	StatementTimeout time.Duration
+	WaitTimeout      time.Duration
+}
+
+// LoadMigrate reads the configuration of the migrate command from the process environment.
+func LoadMigrate() (MigrateConfig, error) { return loadMigrate(os.Getenv, os.ReadFile) }
+
+func loadMigrate(getenv func(string) string, readFile func(string) ([]byte, error)) (MigrateConfig, error) {
+	r := reader{getenv: getenv, readFile: readFile, command: "migrate"}
+	dsn := r.secret("DB_PRIMARY_DSN")
+	if dsn == "" && len(r.errs) == 0 { // an error of the secret itself is already reported
+		r.errs = append(r.errs, errors.New("DB_PRIMARY_DSN (or DB_PRIMARY_DSN_FILE) is not set"))
+	}
+	c := MigrateConfig{
+		PrimaryDSN:       dsn,
+		LockTimeout:      r.positiveDuration("MIGRATE_LOCK_TIMEOUT"),
+		StatementTimeout: r.positiveDuration("MIGRATE_STATEMENT_TIMEOUT"),
+		WaitTimeout:      r.positiveDuration("MIGRATE_WAIT_TIMEOUT"),
+	}
+	if err := errors.Join(r.errs...); err != nil {
+		return MigrateConfig{}, err
+	}
+	return c, nil
 }
 
 var peerVar = regexp.MustCompile(`^PEER_([A-Z0-9_]+)_ADDR$`)
 
 func load(getenv func(string) string, readFile func(string) ([]byte, error), environ func() []string) (Config, error) {
-	r := reader{getenv: getenv, readFile: readFile}
+	r := reader{getenv: getenv, readFile: readFile, command: "serve"}
 	c := Config{
-		Service: r.str("SERVICE_NAME", ""),
-		Env:     Env(r.str("ENV", string(EnvProd))),
+		Service: r.str("SERVICE_NAME"),
+		Env:     Env(r.str("ENV")),
 		Log: LogConfig{
-			Level:  r.level("LOG_LEVEL", slog.LevelInfo),
-			Format: r.str("LOG_FORMAT", "json"),
+			Level:  r.level("LOG_LEVEL"),
+			Format: r.str("LOG_FORMAT"),
 		},
 		GRPC: GRPCConfig{
-			Addr:           r.str("GRPC_ADDR", ":9090"),
-			MaxRecvMsgSize: r.int("GRPC_MAX_RECV_MSG_SIZE", 4<<20),
+			Addr:           r.str("GRPC_ADDR"),
+			MaxRecvMsgSize: r.int("GRPC_MAX_RECV_MSG_SIZE"),
 		},
-		HTTP: HTTPConfig{Addr: r.str("HTTP_ADDR", ":9091")},
+		HTTP: HTTPConfig{Addr: r.str("HTTP_ADDR")},
 		DB: DBConfig{
 			PrimaryDSN: r.secret("DB_PRIMARY_DSN"),
 			ReplicaDSN: r.secret("DB_REPLICA_DSN"),
-			MaxConns:   int32(r.int("DB_MAX_CONNS", 10)),
+			MaxConns:   int32(r.int("DB_MAX_CONNS")),
 		},
 		Auth: AuthConfig{
-			Mode:             AuthMode(r.str("AUTH_MODE", string(AuthVerify))),
-			ServiceTokenFile: r.str("SERVICE_TOKEN_FILE", ""),
+			Mode:             AuthMode(r.str("AUTH_MODE")),
+			ServiceTokenFile: r.str("SERVICE_TOKEN_FILE"),
 		},
 		Peers:           map[string]string{},
-		ShutdownDelay:   r.duration("SHUTDOWN_DELAY", 5*time.Second),
-		ShutdownTimeout: r.duration("SHUTDOWN_TIMEOUT", 20*time.Second),
+		ShutdownDelay:   r.duration("SHUTDOWN_DELAY"),
+		ShutdownTimeout: r.duration("SHUTDOWN_TIMEOUT"),
 	}
 	c.GRPC.Reflection = c.Env == EnvDev
 
+	r.decl("PEER_<NAME>_ADDR", false)
 	for _, kv := range environ() {
 		name, value, _ := strings.Cut(kv, "=")
 		if m := peerVar.FindStringSubmatch(name); m != nil && value != "" {
@@ -171,21 +193,47 @@ func (c Config) validate() []error {
 	return errs
 }
 
+// onRead, when set by a test, sees every variable a load reads.
+var onRead func(command, name string)
+
 type reader struct {
 	getenv   func(string) string
 	readFile func(string) ([]byte, error)
+	command  string // serve or migrate: which declarations of Vars apply
 	errs     []error
 }
 
-func (r *reader) str(name, def string) string {
+// decl returns the declaration of name for the reader's command. An undeclared name is a
+// defect of this package (the documentation would miss it), reported as a load error so
+// any test of Load catches it.
+func (r *reader) decl(name string, secret bool) Var {
+	if onRead != nil {
+		onRead(r.command, name)
+	}
+	for _, v := range Vars {
+		if v.Name == name && v.Command == r.command {
+			if v.Secret != secret {
+				r.errs = append(r.errs, fmt.Errorf("config: %s is read with secret=%v but declared with %v", name, secret, v.Secret))
+			}
+			return v
+		}
+	}
+	r.errs = append(r.errs, fmt.Errorf("config: %s is not declared in Vars for %s", name, r.command))
+	return Var{}
+}
+
+// str returns the value of name, or its declared default.
+func (r *reader) str(name string) string {
+	d := r.decl(name, false)
 	if v := r.getenv(name); v != "" {
 		return v
 	}
-	return def
+	return d.Default
 }
 
 // secret reads name, or the file named by name_FILE (trailing newline trimmed).
 func (r *reader) secret(name string) string {
+	r.decl(name, true)
 	v, file := r.getenv(name), r.getenv(name+"_FILE")
 	switch {
 	case v != "" && file != "":
@@ -203,11 +251,8 @@ func (r *reader) secret(name string) string {
 	return v
 }
 
-func (r *reader) int(name string, def int) int {
-	v := r.getenv(name)
-	if v == "" {
-		return def
-	}
+func (r *reader) int(name string) int {
+	v := r.str(name)
 	n, err := strconv.Atoi(v)
 	if err != nil {
 		r.errs = append(r.errs, fmt.Errorf("%s=%q: not an integer", name, v))
@@ -215,11 +260,8 @@ func (r *reader) int(name string, def int) int {
 	return n
 }
 
-func (r *reader) duration(name string, def time.Duration) time.Duration {
-	v := r.getenv(name)
-	if v == "" {
-		return def
-	}
+func (r *reader) duration(name string) time.Duration {
+	v := r.str(name)
 	d, err := time.ParseDuration(v)
 	if err != nil || d < 0 {
 		r.errs = append(r.errs, fmt.Errorf("%s=%q: not a non-negative duration like 5s", name, v))
@@ -227,11 +269,17 @@ func (r *reader) duration(name string, def time.Duration) time.Duration {
 	return d
 }
 
-func (r *reader) level(name string, def slog.Level) slog.Level {
-	v := r.getenv(name)
-	if v == "" {
-		return def
+func (r *reader) positiveDuration(name string) time.Duration {
+	v := r.str(name)
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		r.errs = append(r.errs, fmt.Errorf("%s=%q: not a positive duration like 5s", name, v))
 	}
+	return d
+}
+
+func (r *reader) level(name string) slog.Level {
+	v := r.str(name)
 	var l slog.Level
 	if err := l.UnmarshalText([]byte(v)); err != nil {
 		r.errs = append(r.errs, fmt.Errorf("%s=%q: want debug, info, warn or error", name, v))

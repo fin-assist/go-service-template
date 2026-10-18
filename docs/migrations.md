@@ -29,13 +29,7 @@ golang-migrate отправляет файл целиком одним запр�
 
 ## Таймауты
 
-Команда `migrate` ставит на соединение:
-
-| Переменная | По умолчанию | Что делает |
-|---|---|---|
-| `MIGRATE_LOCK_TIMEOUT` | `5s` | `lock_timeout`: DDL, который не дождался блокировки занятой таблицы, падает, а не держит очередь запросов сервиса за собой |
-| `MIGRATE_STATEMENT_TIMEOUT` | `15m` | `statement_timeout` каждой команды |
-| `MIGRATE_WAIT_TIMEOUT` | `15m` | сколько ждать, пока другой запуск миграций того же источника закончит |
+Команда `migrate` ставит на соединение `lock_timeout` и `statement_timeout` и ограничивает ожидание параллельного запуска того же источника: переменные `MIGRATE_LOCK_TIMEOUT`, `MIGRATE_STATEMENT_TIMEOUT`, `MIGRATE_WAIT_TIMEOUT`, значения по умолчанию — в [config.md](config.md), «`migrate`» (таблица генерируется из кода).
 
 Долгая миграция (бэкфилл, индекс на большой таблице) поднимает таймаут у себя: `SET LOCAL statement_timeout = '2h';`. Повторять таймауты в каждом файле не нужно — поэтому правила squawk `require-lock-timeout` и `require-statement-timeout` выключены в `.squawk.toml`.
 
