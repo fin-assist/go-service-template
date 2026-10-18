@@ -75,6 +75,36 @@ prometheus client_golang, testcontainers-go, squawk. A new dependency is named i
 - A local `serve` for a smoke check: `ENV=dev AUTH_MODE=insecure-dev SERVICE_NAME=service DB_PRIMARY_DSN=… make run`;
   `/readyz` on `HTTP_ADDR` answers when the database does.
 
+## Principles
+
+Priorities when they pull apart, in this order:
+
+1. **Test coverage** — a change without its tests (Tests below) is not done, however good the code.
+2. **Clarity** — code a reader understands without the author: plain control flow, explicit names, no cleverness.
+3. **Security** — the Security rules of the review are requirements, not trade-offs; this place in the order decides
+   only between options that all meet them.
+4. **Performance** — optimise when a measurement shows the need, not in advance; a faster but less clear version
+   comes with the benchmark that justifies it.
+
+- **No frameworks.** No web or RPC frameworks (gin, echo, fiber, go-kit), no ORM (gorm, ent), no DI containers or
+  generators (fx, wire, dig), no config frameworks (viper): the standard library, grpc-go and explicit wiring in
+  `internal/app`. `depguard` in `.golangci.yml` rejects the common ones.
+- **Standard library first.** Use `net/http`, `log/slog`, `encoding/json`, `errors`, `testing`, `context`,
+  `database/sql` interfaces and the rest of the standard library wherever they do the job; tests use `testing` (no
+  testify, gomock). A third-party package only where the standard library has no equivalent — the PostgreSQL driver
+  (pgx), gRPC and protobuf, protovalidate, golang-migrate, the Prometheus client, testcontainers — and a new one is
+  named in the PR with why the standard library is not enough.
+- **SOLID, the Go way:**
+  - single responsibility — a package and a type have one reason to change: a usecase does not format messages, a
+    handler does not hold business rules, a repository does not decide;
+  - open/closed — new behaviour is a new type behind an existing interface (a repository, a client, a job), not a
+    flag or a type switch in old code;
+  - Liskov — every implementation of an interface keeps its contract, fakes in tests included: the same errors for
+    the same cases, no panics where the real one returns an error;
+  - interface segregation — small interfaces declared by the consumer with only the methods it calls;
+  - dependency inversion — usecases depend on those interfaces, never on adapters; `wire()` passes the
+    implementations in.
+
 ## Writing code
 
 - Code, comments, identifiers, commit messages — English. `docs/*.md`, `README.md`, PR title and description —
@@ -198,6 +228,9 @@ dedicated pass on every PR: Security and Tests.
 
 - Write all review comments in Russian (summary and inline). Identifiers and quotes stay as they are.
 - Report only verified problems with a concrete failure scenario: which caller, request or data, what goes wrong.
+- Weigh findings by the priorities of «Principles»: missing tests first, then clarity, then security beyond the
+  mandatory rules, then performance; a performance finding needs a measurement or an evident cost (an N+1, an
+  unbounded load), not a guess.
   Skip style nits, naming preferences and wording of comments and docs unless the text misstates the behaviour.
 - Post each finding as an inline comment on the changed line. The summary lists what was checked, with a
   «Безопасность» part and a «Тесты» part; «not affected» is a valid answer, with one line why.
@@ -263,6 +296,9 @@ security-relevant behaviour has negative tests.
 - Field meanings, error codes, limits and call models match `fin-assist/contracts`; a deviation is stated in the PR.
 - Names follow the existing ones; no second way to do what a package here already does (transactions, clients,
   config, logging).
+- No framework, ORM or DI container; a new third-party dependency where the standard library would do is a finding.
+- SOLID: business rules outside usecases, an interface declared by its implementation instead of its consumer, a
+  usecase importing an adapter, or a fake that behaves unlike the real implementation is a finding.
 - Metric labels stay bounded; a new metric has a help text and is listed in `docs/server.md`.
 
 ### Checklist

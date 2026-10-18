@@ -5,6 +5,7 @@ linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
   enable:
     - bodyclose
+    - depguard
     - errorlint
     - forbidigo
     - gosec
@@ -30,6 +31,51 @@ linters:
           msg: ErrorInfo is built only by finerr (grpc-api.md 5.2)
         - pattern: ^grpc\.Errorf$
           msg: build errors with finerr (grpc-api.md 5.2)
+    depguard:
+      # No frameworks, ORMs, DI containers; the standard library first (AGENTS.md, «Principles»).
+      rules:
+        main:
+          deny:
+            - pkg: github.com/gin-gonic/gin
+              desc: no web frameworks, use net/http
+            - pkg: github.com/labstack/echo
+              desc: no web frameworks, use net/http
+            - pkg: github.com/gofiber/fiber
+              desc: no web frameworks, use net/http
+            - pkg: github.com/go-chi/chi
+              desc: net/http ServeMux has method and path patterns
+            - pkg: github.com/gorilla/mux
+              desc: net/http ServeMux has method and path patterns
+            - pkg: github.com/go-kit/kit
+              desc: no frameworks
+            - pkg: gorm.io
+              desc: no ORM, SQL on pgx
+            - pkg: entgo.io
+              desc: no ORM, SQL on pgx
+            - pkg: github.com/jmoiron/sqlx
+              desc: SQL on pgx
+            - pkg: go.uber.org/fx
+              desc: no DI containers, explicit wiring in internal/app
+            - pkg: go.uber.org/dig
+              desc: no DI containers, explicit wiring in internal/app
+            - pkg: github.com/google/wire
+              desc: no DI generators, explicit wiring in internal/app
+            - pkg: github.com/spf13/viper
+              desc: configuration is internal/config
+            - pkg: github.com/sirupsen/logrus
+              desc: use log/slog
+            - pkg: go.uber.org/zap
+              desc: use log/slog
+            - pkg: github.com/rs/zerolog
+              desc: use log/slog
+            - pkg: github.com/pkg/errors
+              desc: use errors and fmt.Errorf with %w
+            - pkg: github.com/stretchr/testify
+              desc: use testing
+            - pkg: github.com/golang/mock
+              desc: write fakes of the consumer-side interfaces
+            - pkg: go.uber.org/mock
+              desc: write fakes of the consumer-side interfaces
     gosec:
       excludes:
         - G115 # integer conversions of config values are bounds-checked in config

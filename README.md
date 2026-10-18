@@ -61,7 +61,7 @@ CI (`.github/workflows/ci.yml`):
 | Job | Что |
 |---|---|
 | `go` | `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций; тесты скриптов; покрытие изменённых строк — в сводке прогона и комментарием в PR |
-| `lint` | golangci-lint (`.golangci.yml`), в том числе `forbidigo` против обхода `finerr` |
+| `lint` | golangci-lint (`.golangci.yml`), в том числе `forbidigo` против обхода `finerr` и `depguard` против фреймворков, ORM и DI-контейнеров |
 | `image` | сборка образа и запуск бинаря в нём |
 | `migrations` (PR) | существующие миграции не изменены, squawk по новым |
 
