@@ -127,6 +127,14 @@ Every change comes with its automated tests in the same PR — not in a follow-u
   another service (`apitest.Caller`). Assert the status code, `ErrorInfo.reason` (`apitest.Reason`) and metadata, and
   the response fields against the contract — not the message text. Cover the main path, every error the contract
   lists for the method, a foreign caller, another user's object and a deleted user.
+- **API tests in `bank-bff` — every REST endpoint.** `bank-bff` is covered by API tests too, at its own API — the
+  REST of `openapi.yaml` the mobile client calls: a real HTTP request to the `bank-bff` handler (`httptest`), the
+  services behind it played by fake gRPC servers on bufconn that answer with success and with each registry error.
+  Every response is validated against `openapi.yaml` (kin-openapi), and the test asserts the HTTP status,
+  `error.code`, `details[]`, headers (`Retry-After`, `Idempotency-Key` handling) and SSE events — the main path, every
+  error `docs/api.md` lists for the endpoint (including the translation of each `reason` by `finerr.ToREST` and an
+  unknown one into 500), a missing or bad token, a missing `Idempotency-Key`, a body that fails the schema, an
+  unsupported client version. Every operation of `openapi.yaml` that `bank-bff` serves has at least one API test.
 
 Also:
 
@@ -260,6 +268,8 @@ security-relevant behaviour has negative tests.
 ### Checklist
 
 - New code has unit tests; new functionality has integration tests and API tests (`apitest`), see Tests.
+- In `bank-bff`, a new or changed REST endpoint has API tests over HTTP with responses validated against
+  `openapi.yaml`.
 - A new gRPC method has its row in `AccessPolicy()` matching grpc-api.md 3.3.
 - A new client-facing error goes through `finerr`; a new reason or metadata key exists in `contracts` first.
 - A new query by object ID is scoped by the user and has a test with another user's ID.
