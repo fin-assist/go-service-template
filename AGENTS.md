@@ -92,7 +92,7 @@ pushing.
   - `@claude` — `.github/workflows/claude.yml` (runs from the default branch), Claude Fable 5.1
     (`claude-fable-5-1`). Needs the Claude GitHub App and the `CLAUDE_CODE_OAUTH_TOKEN` secret.
   - `@codex` — the Codex GitHub integration under the owner's ChatGPT subscription.
-- Waiting for the review: react to the PR's GitHub events when the session receives them; otherwise check 2 minutes
+- Waiting for the review: react to the PR's GitHub events when the session receives them; otherwise check 3 minutes
   after the request, then every 2 minutes. A reviewer has answered when it posted its review or summary for the
   latest commit; for Codex (`chatgpt-codex-connector[bot]`) «Didn't find any major issues» or a 👍 without a comment
   also counts. A reviewer silent for 15 minutes after the last request: say so in the PR and to the owner, stop
