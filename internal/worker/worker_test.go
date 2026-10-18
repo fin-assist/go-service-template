@@ -37,6 +37,33 @@ func TestRunRestartsFailedAndPanickingJobs(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotRestartJobStoppedByShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	var runs atomic.Int32
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		Run(ctx, slog.New(slog.DiscardHandler), Job{Name: "blocks", Run: func(ctx context.Context) error {
+			if runs.Add(1) == 1 {
+				close(started)
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}})
+		close(done)
+	}()
+	<-started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+	if n := runs.Load(); n != 1 {
+		t.Fatalf("job ran %d times, want 1", n)
+	}
+}
+
 func TestEvery(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	var n atomic.Int32
