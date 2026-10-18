@@ -55,7 +55,7 @@ func DSN(t testing.TB) string {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer admin.Close(ctx)
+	defer func() { _ = admin.Close(ctx) }()
 
 	name := "t_" + randomHex(8)
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
@@ -66,7 +66,7 @@ func DSN(t testing.TB) string {
 		if err != nil {
 			return
 		}
-		defer c.Close(context.Background())
+		defer func() { _ = c.Close(context.Background()) }()
 		_, _ = c.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
 	})
 

@@ -248,7 +248,7 @@ func withMigrate(ctx context.Context, cfg Config, src Source, fn func(*migrate.M
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	drv, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{MigrationsTable: src.Table})
 	if err != nil {
@@ -266,7 +266,7 @@ func withMigrate(ctx context.Context, cfg Config, src Source, fn func(*migrate.M
 	if err != nil {
 		return err
 	}
-	defer m.Close()
+	defer func() { _, _ = m.Close() }()
 	m.LockTimeout = cfg.WaitTimeout
 	m.Log = logger{cfg.Logger.With("source", src.Name)}
 

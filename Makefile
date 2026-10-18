@@ -1,0 +1,36 @@
+# Common commands; CI runs the same steps (.github/workflows/ci.yml).
+GOLANGCI_LINT_VERSION := v2.15.0
+BIN := bin/service
+export GOPRIVATE := github.com/fin-assist/*
+
+.PHONY: build test lint fmt run migrate image up down
+
+build: ## build the binary into bin/
+	go build -trimpath -o $(BIN) ./cmd/service
+
+test: ## unit and integration tests (Docker or TEST_DATABASE_URL)
+	go vet ./...
+	go test -race -count=1 ./...
+
+lint: ## golangci-lint of the pinned version
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
+
+fmt:
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) fmt ./...
+
+image: ## the service image
+	docker build -t service:dev .
+
+up: ## PostgreSQL, migrations and the service in Docker
+	docker compose up --build
+
+down:
+	docker compose down
+
+run: build ## the service on the host against the compose PostgreSQL
+	SERVICE_NAME=service ENV=dev AUTH_MODE=insecure-dev LOG_FORMAT=text \
+	DB_PRIMARY_DSN='postgres://service:service@localhost:5432/service?sslmode=disable' \
+	$(BIN) serve
+
+migrate: build ## migrate up against the compose PostgreSQL
+	DB_PRIMARY_DSN='postgres://service:service@localhost:5432/service?sslmode=disable' $(BIN) migrate up

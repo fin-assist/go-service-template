@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate"
+	"github.com/fin-assist/go-service-template/internal/config"
 	"github.com/fin-assist/go-service-template/migrations"
 )
 
@@ -54,7 +55,7 @@ func runMigrate(ctx context.Context, args []string, out io.Writer) error {
 			if s.Dirty {
 				dirty = " (dirty)"
 			}
-			fmt.Fprintf(out, "%s\t%d%s\n", s.Source, s.Version, dirty)
+			_, _ = fmt.Fprintf(out, "%s\t%d%s\n", s.Source, s.Version, dirty)
 		}
 		return nil
 
@@ -82,14 +83,17 @@ func runMigrate(ctx context.Context, args []string, out io.Writer) error {
 
 // migrateConfig reads the configuration from the environment:
 //
-//	DB_PRIMARY_DSN             DSN of the primary (required)
+//	DB_PRIMARY_DSN or DB_PRIMARY_DSN_FILE  DSN of the primary (required)
 //	MIGRATE_LOCK_TIMEOUT       lock_timeout of DDL statements, default 5s
 //	MIGRATE_STATEMENT_TIMEOUT  statement_timeout, default 15m
 //	MIGRATE_WAIT_TIMEOUT       wait for a concurrent run of the same source, default 15m
 func migrateConfig() (migrate.Config, error) {
-	dsn := os.Getenv("DB_PRIMARY_DSN")
+	dsn, err := config.Secret("DB_PRIMARY_DSN")
+	if err != nil {
+		return migrate.Config{}, err
+	}
 	if dsn == "" {
-		return migrate.Config{}, fmt.Errorf("DB_PRIMARY_DSN is not set")
+		return migrate.Config{}, fmt.Errorf("DB_PRIMARY_DSN (or DB_PRIMARY_DSN_FILE) is not set")
 	}
 	cfg := migrate.DefaultConfig(dsn)
 	cfg.Logger = slog.Default()
