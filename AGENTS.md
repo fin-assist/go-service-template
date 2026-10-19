@@ -191,7 +191,7 @@ Also:
 
 ## Checks
 
-CI (table in `README.md`): `go vet`, `go test -race` with PostgreSQL 18 in Docker and coverage of changed lines,
+CI (table in `README.md`): `go mod tidy` clean, `go vet`, `go test -race` with PostgreSQL 18 in Docker and coverage of changed lines,
 golangci-lint, image build, and on PRs the migration checks (existing files unchanged, squawk on new ones). Run
 `make test` (or `make cover`) and `make lint` before pushing.
 
