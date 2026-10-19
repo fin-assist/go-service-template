@@ -8,7 +8,8 @@ export GOPRIVATE := github.com/fin-assist/*
 build: ## build the binary into bin/
 	go build -trimpath -o $(BIN) ./cmd/service
 
-test: ## unit and integration tests (Docker or TEST_DATABASE_URL)
+test: ## go.mod tidy, unit and integration tests (Docker or TEST_DATABASE_URL)
+	go mod tidy -diff
 	go vet ./...
 	go test -race -count=1 ./...
 

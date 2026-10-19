@@ -36,6 +36,8 @@ jobs:
           if [ -n "$TOKEN" ]; then
             git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
           fi
+      - name: go.mod is tidy
+        run: go mod tidy -diff # prints the diff and fails when go.mod or go.sum would change
       - name: Vet
         run: go vet ./...
       # Integration tests start PostgreSQL in Docker (testcontainers); with CI set they fail
