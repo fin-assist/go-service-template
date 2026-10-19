@@ -293,6 +293,15 @@ func TestPanicIsInternalAndLogged(t *testing.T) {
 	if n := strings.Count(e.logs.String(), "panic in handler"); n != 2 {
 		t.Fatalf("panic must be logged for both calls, got %d lines", n)
 	}
+	// finish runs after recover: the call line and the metric see INTERNAL, not OK.
+	for _, m := range []string{emptyCall, streamOut} {
+		if n := testutil.ToFloat64(e.srv.handled.WithLabelValues(m, "Internal", "")); n != 1 {
+			t.Fatalf("%s: handled{code=Internal} = %v, want 1: finish must run after recover", m, n)
+		}
+	}
+	if n := strings.Count(e.logs.String(), `"code":"Internal"`); n != 2 {
+		t.Fatalf("want two call lines with code Internal, got %d: %s", n, e.logs.String())
+	}
 }
 
 // subjectless accepts every token but names no user, as a broken verifier might.
