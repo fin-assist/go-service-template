@@ -129,14 +129,15 @@ Priorities when they pull apart, in this order:
 - Database: SQL with parameters only (`$1`), table and column names are constants. A usecase opens the transaction
   with `db.Run`; repositories take `db.Writer(ctx)` / `db.Reader(ctx)`; no calls to other services inside `Run`.
   Migrations follow `docs/migrations.md` (two releases for an incompatible change, `CONCURRENTLY` alone in a file).
-- No validation or logic in the schema (FIN-194, `docs/migrations.md` «Что можно в схеме»): only `PRIMARY KEY`,
-  `UNIQUE`, `FOREIGN KEY` (`ON DELETE` / `ON UPDATE` `CASCADE` and `SET NULL` allowed), `NOT NULL`, `DEFAULT` and
-  indexes, unique, partial and expression ones included; an identity column (`GENERATED ALWAYS AS IDENTITY`) is a
-  key and allowed. No `CHECK`, `EXCLUDE`, triggers, stored functions or procedures, domains with constraints, and
-  no generated column carrying validation or business logic. Such invariants live in
-  `internal/domain` or the usecase with unit tests; actions on a write (`pg_notify` included) run in the service's
-  own `db.Run`. DDL inside a migration (a `DO` block creating the first partition, `RAISE EXCEPTION` in an
-  irreversible down file) is not runtime logic and is allowed.
+- No validation or logic in the schema (FIN-194, `docs/migrations.md` «Что можно в схеме»): allowed are `PRIMARY KEY`,
+  `UNIQUE`, `FOREIGN KEY` with any `ON DELETE` / `ON UPDATE` action (`SET DEFAULT` included), `NOT NULL`, `DEFAULT`,
+  indexes (unique, partial and expression ones included) and generated columns `GENERATED ALWAYS AS (…) STORED` (a
+  value computed for storage or search, not validation); an identity column (`GENERATED ALWAYS AS IDENTITY`) is a
+  separate case, a key, and is allowed too. Not allowed: `CHECK`, `EXCLUDE`, triggers, stored functions or procedures,
+  domains with constraints. Such invariants live in `internal/domain` or the usecase with unit tests; actions on a
+  write (`pg_notify` included) run in the service's own `db.Run`. DDL inside a migration (a `DO` block creating the
+  first partition, `RAISE EXCEPTION` in an irreversible down file) runs once on `migrate up` / `migrate down`, is not
+  runtime logic and is allowed.
 - Clients of other services: `client.Dial` with `Retry` listing only reads and methods idempotent by construction;
   the context carries the deadline.
 - Time: "now" in business logic comes from an injected clock (`func() time.Time` or an interface passed by `wire()`),
@@ -334,10 +335,9 @@ security-relevant behaviour has negative tests.
 - A new query by object ID is scoped by the user and has a test with another user's ID.
 - A new effect with an idempotency record or an outbox row is written in one `db.Run`, and a retry test shows it is
   not applied twice.
-- A new migration follows `docs/migrations.md` and passes squawk and up → down → up; it adds no `CHECK`,
-  `EXCLUDE`, trigger, stored function, constrained domain or generated column carrying validation or
-  logic (FIN-194; indexes, expression ones included, are allowed), and
-  the invariant it would have expressed is checked in code with a test.
+- A new migration follows `docs/migrations.md` and passes squawk and up → down → up; it adds no `CHECK`, `EXCLUDE`,
+  trigger, stored function or procedure, or domain with constraints (FIN-194; indexes, expression ones included, and
+  generated columns are allowed), and the invariant it would have expressed is checked in code with a test.
 - A new metric has bounded labels and is listed in `docs/server.md`; a new setting is declared in `Vars` and the
   tables of `docs/config.md` are regenerated, not edited by hand.
 - Changed lines the coverage comment of the PR (posted by CI) shows as uncovered have a reason in the PR.
