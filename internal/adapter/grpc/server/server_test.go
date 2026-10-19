@@ -34,6 +34,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"github.com/fin-assist/go-service-template/internal/logx"
 	"github.com/fin-assist/go-service-template/internal/reqctx"
 )
 
@@ -122,7 +123,7 @@ func start(t *testing.T, p Policy, adjust ...func(*Deps)) *env {
 	logs := &bytes.Buffer{}
 	reg := prometheus.NewRegistry()
 	deps := Deps{
-		Logger:     slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Logger:     logx.New(logs, "json", slog.LevelDebug, "test"), // the production logger: context values in every line
 		Metrics:    reg,
 		Policy:     p,
 		Services:   DevServiceVerifier{},
@@ -556,6 +557,51 @@ func TestValidationBecomesBadRequest(t *testing.T) {
 	}
 	if _, ok := finerr.ToREST(err); !ok {
 		t.Fatal("bank-bff must be able to translate the validation error")
+	}
+}
+
+// brokenRuleMessage builds a message whose field carries a CEL rule that does not compile:
+// protovalidate then fails with a compilation error, not a validation one.
+func brokenRuleMessage(t *testing.T) *dynamicpb.Message {
+	t.Helper()
+	rule := validate.Rule_builder{Id: proto.String("broken"), Expression: proto.String("this.nope.nope(")}.Build()
+	o := &descriptorpb.FieldOptions{}
+	proto.SetExtension(o, validate.E_Field, validate.FieldRules_builder{Cel: []*validate.Rule{rule}}.Build())
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("test/broken.proto"),
+		Package:    proto.String("test"),
+		Syntax:     proto.String("proto3"),
+		Dependency: []string{"buf/validate/validate.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Broken"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("name"), Number: proto.Int32(1), JsonName: proto.String("name"),
+				Type:    descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+				Label:   descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Options: o,
+			}},
+		}},
+	}
+	fd, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dynamicpb.NewMessage(fd.Messages().ByName("Broken"))
+}
+
+// A rule that protovalidate cannot evaluate is our defect: the caller gets INTERNAL_ERROR,
+// not a validation error that blames its request, and the defect is logged with the
+// request ID of the call.
+func TestBrokenValidationRuleIsInternalAndLogged(t *testing.T) {
+	e := start(t, policy())
+	ctx := reqctx.WithRequestID(context.Background(), "req-broken")
+	err := e.srv.validate(ctx, brokenRuleMessage(t))
+	if status.Code(err) != codes.Internal || reasonOf(err) != "INTERNAL_ERROR" {
+		t.Fatalf("got %v, want INTERNAL_ERROR", err)
+	}
+	logs := e.logs.String()
+	if !strings.Contains(logs, "protovalidate failed") || !strings.Contains(logs, "req-broken") {
+		t.Fatalf("the defect must be logged with the request ID: %s", logs)
 	}
 }
 
