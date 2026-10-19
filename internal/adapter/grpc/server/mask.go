@@ -34,9 +34,10 @@ func maskMetadata(md metadata.MD) map[string]string {
 	return out
 }
 
-// maskMessage returns a copy of m for a log line with every string or bytes field whose
-// name contains "token" replaced (verification_token, registration_token, refresh_token),
-// at any depth. Masking of other personal data is after MVP (grpc-api.md 4).
+// maskMessage returns a copy of m for a log line: every string field whose name contains
+// "token" is replaced (verification_token, registration_token, refresh_token) and every
+// bytes field is cleared whatever its name (a statement file, a key), at any depth. Masking
+// of other personal data is after MVP (grpc-api.md 4).
 func maskMessage(m proto.Message) proto.Message {
 	if m == nil {
 		return nil
@@ -58,7 +59,7 @@ func maskFields(m protoreflect.Message) {
 					maskFields(l.Get(i).Message())
 				case secret && fd.Kind() == protoreflect.StringKind:
 					l.Set(i, protoreflect.ValueOfString(masked))
-				case secret && fd.Kind() == protoreflect.BytesKind:
+				case fd.Kind() == protoreflect.BytesKind:
 					l.Set(i, protoreflect.ValueOfBytes(nil))
 				}
 			}
@@ -71,6 +72,8 @@ func maskFields(m protoreflect.Message) {
 					maskFields(mv.Message())
 				case secret && vd.Kind() == protoreflect.StringKind:
 					mp.Set(k, protoreflect.ValueOfString(masked))
+				case vd.Kind() == protoreflect.BytesKind:
+					mp.Set(k, protoreflect.ValueOfBytes(nil))
 				}
 				return true
 			})
@@ -78,7 +81,7 @@ func maskFields(m protoreflect.Message) {
 			maskFields(v.Message())
 		case secret && fd.Kind() == protoreflect.StringKind:
 			m.Set(fd, protoreflect.ValueOfString(masked))
-		case secret && fd.Kind() == protoreflect.BytesKind:
+		case fd.Kind() == protoreflect.BytesKind:
 			m.Set(fd, protoreflect.ValueOfBytes(nil))
 		}
 		return true
