@@ -82,20 +82,31 @@ func (s *Server) authorize(ctx context.Context, method string) (context.Context,
 
 	userToken, hasUser := bearer(first(ctx, mdAuthorization))
 	switch rule.Model {
+	case ModelSystem, ModelNoUser:
+		// Neither acts for a user: an authorization header, if any, is ignored.
+		return ctx, nil
 	case ModelUser:
 		if !hasUser {
 			return ctx, finerr.InvalidToken()
 		}
 	case ModelMixed:
-	default: // system and no-user calls do not act for a user, whatever the header says
-		return ctx, nil
-	}
-	if !hasUser {
-		return ctx, nil
+		if !hasUser {
+			return ctx, nil // the system variant: user_id is a request field
+		}
+	default:
+		// Policy.validate rejects such a rule before Serve; refuse rather than guess.
+		s.log.ErrorContext(ctx, "access rule without a model", "method", method)
+		return ctx, bare(codes.PermissionDenied)
 	}
 	userID, err := s.deps.Users.VerifyUser(ctx, userToken)
 	if err != nil {
 		return ctx, err
+	}
+	if userID == "" {
+		// A verifier that accepts a token without a subject would turn a user call into a
+		// system one (reqctx.UserID reports no user): fail closed instead.
+		s.log.ErrorContext(ctx, "user token verified without a subject", "method", method)
+		return ctx, finerr.InvalidToken()
 	}
 	deleted, err := s.deps.Tombstones.IsDeleted(ctx, userID)
 	if err != nil {
@@ -130,7 +141,7 @@ func first(ctx context.Context, key string) string {
 
 // validate checks a request message by its protovalidate annotations. Violations become
 // VALIDATION_ERROR with one BadRequest entry per field (grpc-api.md 8, «Валидация полей»).
-func (s *Server) validate(msg any) error {
+func (s *Server) validate(ctx context.Context, msg any) error {
 	m, ok := msg.(proto.Message)
 	if !ok {
 		return nil
@@ -142,7 +153,7 @@ func (s *Server) validate(msg any) error {
 	var verr *protovalidate.ValidationError
 	if !asValidation(err, &verr) {
 		// A broken annotation (compilation or runtime error) is our defect, not the caller's.
-		s.log.Error("protovalidate failed", "message", m.ProtoReflect().Descriptor().FullName(), "error", err)
+		s.log.ErrorContext(ctx, "protovalidate failed", "message", m.ProtoReflect().Descriptor().FullName(), "error", err)
 		return finerr.InternalError()
 	}
 	vs := make([]*errdetails.BadRequest_FieldViolation, 0, len(verr.Violations))
@@ -179,11 +190,13 @@ func violationCode(ruleID string) string {
 
 var formatRules = regexp.MustCompile(`\.(pattern|email|hostname|ip|ipv4|ipv6|uri|uri_ref|uuid|tuuid|address|well_known_regex|prefix|suffix|contains|not_contains|well_known)(_|$)|\.(defined_only)$`)
 
-// observe logs the call and records RED metrics. Labels: method, code, reason — never
-// user_id or another unbounded value (grpc-api.md 9).
-func (s *Server) observe(ctx context.Context, method string, start time.Time, req any, err error) {
+// observe logs the call and records RED metrics. err is what the caller gets, cause is
+// what the handler returned before normalize (the same error when nothing was hidden):
+// the log line carries the cause, the metrics and the client see err. Labels: method,
+// code, reason — never user_id or another unbounded value (grpc-api.md 9).
+func (s *Server) observe(ctx context.Context, method string, start time.Time, req any, err, cause error) {
 	code := status.Code(err)
-	r := reason(err)
+	r := Reason(err)
 	s.handled.WithLabelValues(method, code.String(), r).Inc()
 	s.duration.WithLabelValues(method).Observe(time.Since(start).Seconds())
 
@@ -196,9 +209,9 @@ func (s *Server) observe(ctx context.Context, method string, start time.Time, re
 	if r != "" {
 		attrs = append(attrs, "reason", r)
 	}
-	if err != nil {
+	if cause != nil {
 		// status.message never reaches the client (grpc-api.md 5.2); here is where it is read.
-		attrs = append(attrs, "error", err.Error())
+		attrs = append(attrs, "error", cause.Error())
 	}
 	if s.log.Enabled(ctx, slog.LevelDebug) {
 		md, _ := metadata.FromIncomingContext(ctx)
@@ -217,16 +230,22 @@ func (s *Server) recover(ctx context.Context, method string, err *error) {
 	}
 }
 
+// The deferred functions run in reverse order: recover turns a panic into a bare INTERNAL,
+// then the error is normalized for the caller and the call is logged with its cause.
 func (s *Server) unary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 	start := time.Now()
 	ctx = withRequestID(ctx)
-	defer func() { s.observe(ctx, info.FullMethod, start, req, err) }()
+	defer func() {
+		cause := err
+		err = normalize(err)
+		s.observe(ctx, info.FullMethod, start, req, err, cause)
+	}()
 	defer s.recover(ctx, info.FullMethod, &err)
 
 	if ctx, err = s.authorize(ctx, info.FullMethod); err != nil {
 		return nil, err
 	}
-	if err = s.validate(req); err != nil {
+	if err = s.validate(ctx, req); err != nil {
 		return nil, err
 	}
 	return handler(ctx, req)
@@ -235,7 +254,11 @@ func (s *Server) unary(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 func (s *Server) stream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
 	start := time.Now()
 	ctx := withRequestID(ss.Context())
-	defer func() { s.observe(ctx, info.FullMethod, start, nil, err) }()
+	defer func() {
+		cause := err
+		err = normalize(err)
+		s.observe(ctx, info.FullMethod, start, nil, err, cause)
+	}()
 	defer s.recover(ctx, info.FullMethod, &err)
 
 	if ctx, err = s.authorize(ctx, info.FullMethod); err != nil {
@@ -257,7 +280,7 @@ func (w *serverStream) RecvMsg(m any) error {
 	if err := w.ServerStream.RecvMsg(m); err != nil {
 		return err
 	}
-	return w.s.validate(m)
+	return w.s.validate(w.ctx, m)
 }
 
 // metrics of the server, registered in New.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -51,6 +52,7 @@ type testService struct {
 	testgrpc.UnimplementedTestServiceServer
 	got   chan seen
 	panic bool
+	err   error // what UnaryCall returns instead of finerr.NotFound()
 }
 
 func record(ctx context.Context) seen {
@@ -69,6 +71,9 @@ func (t *testService) EmptyCall(ctx context.Context, _ *testgrpc.Empty) (*testgr
 
 func (t *testService) UnaryCall(ctx context.Context, _ *testgrpc.SimpleRequest) (*testgrpc.SimpleResponse, error) {
 	t.got <- record(ctx)
+	if t.err != nil {
+		return nil, t.err
+	}
 	return nil, finerr.NotFound()
 }
 
@@ -103,18 +108,24 @@ func policy() Policy {
 	}
 }
 
-func start(t *testing.T, p Policy) *env {
+// start runs a server with the dev verifiers and p; adjust, if given, changes the Deps
+// (another verifier) before New.
+func start(t *testing.T, p Policy, adjust ...func(*Deps)) *env {
 	t.Helper()
 	logs := &bytes.Buffer{}
 	reg := prometheus.NewRegistry()
-	srv, err := New(Options{}, Deps{
+	deps := Deps{
 		Logger:     slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Metrics:    reg,
 		Policy:     p,
 		Services:   DevServiceVerifier{},
 		Users:      DevUserVerifier{},
 		Tombstones: deleted{"gone": true},
-	})
+	}
+	for _, a := range adjust {
+		a(&deps)
+	}
+	srv, err := New(Options{}, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +157,7 @@ func call(t *testing.T, caller, user string, kv ...string) context.Context {
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
-func reasonOf(err error) string { return reason(err) }
+func reasonOf(err error) string { return Reason(err) }
 
 func TestUserCall(t *testing.T) {
 	e := start(t, policy())
@@ -267,6 +278,59 @@ func TestPanicIsInternalAndLogged(t *testing.T) {
 	}
 }
 
+// subjectless accepts every token but names no user, as a broken verifier might.
+type subjectless struct{}
+
+func (subjectless) VerifyUser(context.Context, string) (string, error) { return "", nil }
+
+func TestUserTokenWithoutSubjectIsRefused(t *testing.T) {
+	e := start(t, policy(), func(d *Deps) { d.Users = subjectless{} })
+	_, err := testgrpc.NewTestServiceClient(e.conn).EmptyCall(call(t, "bank-bff", "u1"), &testgrpc.Empty{})
+	if status.Code(err) != codes.Unauthenticated || reasonOf(err) != "INVALID_TOKEN" {
+		t.Fatalf("got %v: an empty subject must not pass as a system call", err)
+	}
+	select {
+	case got := <-e.svc.got:
+		t.Fatalf("the handler ran as %+v", got)
+	default:
+	}
+}
+
+// What the handler returns without a status must not travel to the caller as text:
+// grpc-go would send UNKNOWN with err.Error() as the message.
+func TestHandlerErrorsAreNormalized(t *testing.T) {
+	const secret = `relation "user_secret" does not exist`
+	cases := []struct {
+		name   string
+		err    error
+		code   codes.Code
+		reason string
+	}{
+		{"plain error", errors.New(secret), codes.Internal, ""},
+		{"wrapped registry error", fmt.Errorf("load %s: %w", secret, finerr.NotFound()), codes.NotFound, "NOT_FOUND"},
+		{"wrapped deadline", fmt.Errorf("query %s: %w", secret, context.DeadlineExceeded), codes.DeadlineExceeded, ""},
+		{"wrapped cancel", fmt.Errorf("query %s: %w", secret, context.Canceled), codes.Canceled, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := start(t, policy())
+			e.svc.err = tc.err
+			_, err := testgrpc.NewTestServiceClient(e.conn).UnaryCall(call(t, "bank-bff", "u1"), &testgrpc.SimpleRequest{})
+			<-e.svc.got
+			st := status.Convert(err)
+			if st.Code() != tc.code || reasonOf(err) != tc.reason {
+				t.Fatalf("got %v (reason %q), want %v %q", err, reasonOf(err), tc.code, tc.reason)
+			}
+			if strings.Contains(st.Message(), "user_secret") {
+				t.Fatalf("the handler's text reached the caller: %q", st.Message())
+			}
+			if !strings.Contains(e.logs.String(), "user_secret") {
+				t.Fatalf("the cause must be in the log: %s", e.logs.String())
+			}
+		})
+	}
+}
+
 func TestLogsMaskSecretsAndMetricsHaveNoUser(t *testing.T) {
 	e := start(t, policy())
 	ctx := call(t, "bank-bff", "u1", "idempotency-key", "k-123")
@@ -377,7 +441,7 @@ func validationMessage(t *testing.T) *dynamicpb.Message {
 
 func TestValidationBecomesBadRequest(t *testing.T) {
 	e := start(t, policy())
-	err := e.srv.validate(validationMessage(t))
+	err := e.srv.validate(context.Background(), validationMessage(t))
 	if reasonOf(err) != "VALIDATION_ERROR" {
 		t.Fatalf("got %v", err)
 	}

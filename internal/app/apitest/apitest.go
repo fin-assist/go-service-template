@@ -13,7 +13,6 @@ package apitest
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net"
 	"testing"
@@ -23,10 +22,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
-	"google.golang.org/protobuf/proto"
 
+	"github.com/fin-assist/go-service-template/internal/adapter/grpc/server"
 	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate"
 	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate/migratetest"
 	"github.com/fin-assist/go-service-template/internal/app"
@@ -106,19 +104,4 @@ func Caller(ctx context.Context, caller string) context.Context {
 }
 
 // Reason returns ErrorInfo.reason of err: "" for nil, a bare status or a non-status error.
-func Reason(err error) string {
-	var se interface{ GRPCStatus() *status.Status }
-	if !errors.As(err, &se) {
-		return ""
-	}
-	for _, d := range se.GRPCStatus().Details() {
-		m, ok := d.(proto.Message)
-		if !ok || m.ProtoReflect().Descriptor().FullName() != "google.rpc.ErrorInfo" {
-			continue
-		}
-		if r, ok := d.(interface{ GetReason() string }); ok {
-			return r.GetReason()
-		}
-	}
-	return ""
-}
+func Reason(err error) string { return server.Reason(err) }

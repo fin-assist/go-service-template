@@ -117,7 +117,8 @@ func TestMaskMetadata(t *testing.T) {
 }
 
 // tokenMessage builds a message with token fields in every shape maskFields handles:
-// a repeated string, a bytes field, a list of messages, maps with string and message values.
+// a repeated string, a bytes field, a list of messages, maps with string, bytes and message
+// values — and bytes fields without "token" in the name (a file), which are cleared too.
 func tokenMessage(t *testing.T) (*dynamicpb.Message, protoreflect.MessageDescriptor) {
 	t.Helper()
 	str := descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()
@@ -144,6 +145,7 @@ func tokenMessage(t *testing.T) (*dynamicpb.Message, protoreflect.MessageDescrip
 		MessageType: []*descriptorpb.DescriptorProto{
 			{Name: proto.String("Inner"), Field: []*descriptorpb.FieldDescriptorProto{
 				f("refresh_token", 1, str, opt, ""), f("raw_token", 2, byt, opt, ""), f("name", 3, str, opt, ""),
+				f("file", 4, byt, opt, ""),
 			}},
 			{Name: proto.String("Outer"),
 				Field: []*descriptorpb.FieldDescriptorProto{
@@ -153,10 +155,13 @@ func tokenMessage(t *testing.T) (*dynamicpb.Message, protoreflect.MessageDescrip
 					f("inner_map", 4, msg, rep, ".masktest.Outer.InnerMapEntry"),
 					f("one", 5, msg, opt, ".masktest.Inner"),
 					f("blob_tokens", 6, byt, rep, ""),
+					f("pages", 7, byt, rep, ""),
+					f("file_map", 8, msg, rep, ".masktest.Outer.FileMapEntry"),
 				},
 				NestedType: []*descriptorpb.DescriptorProto{
 					entry("TokenMapEntry", "", str),
 					entry("InnerMapEntry", ".masktest.Inner", msg),
+					entry("FileMapEntry", "", byt),
 				}},
 		},
 	}
@@ -170,12 +175,15 @@ func tokenMessage(t *testing.T) (*dynamicpb.Message, protoreflect.MessageDescrip
 		m.Set(inner.Fields().ByName("refresh_token"), protoreflect.ValueOfString("secret"))
 		m.Set(inner.Fields().ByName("raw_token"), protoreflect.ValueOfBytes([]byte("secret")))
 		m.Set(inner.Fields().ByName("name"), protoreflect.ValueOfString("visible"))
+		m.Set(inner.Fields().ByName("file"), protoreflect.ValueOfBytes([]byte("secret")))
 		return m
 	}
 	m := dynamicpb.NewMessage(outer)
 	of := outer.Fields()
 	m.Mutable(of.ByName("tokens")).List().Append(protoreflect.ValueOfString("secret"))
 	m.Mutable(of.ByName("blob_tokens")).List().Append(protoreflect.ValueOfBytes([]byte("secret")))
+	m.Mutable(of.ByName("pages")).List().Append(protoreflect.ValueOfBytes([]byte("secret")))
+	m.Mutable(of.ByName("file_map")).Map().Set(protoreflect.ValueOfString("k").MapKey(), protoreflect.ValueOfBytes([]byte("secret")))
 	m.Mutable(of.ByName("items")).List().Append(protoreflect.ValueOfMessage(newInner()))
 	m.Mutable(of.ByName("token_map")).Map().Set(protoreflect.ValueOfString("k").MapKey(), protoreflect.ValueOfString("secret"))
 	m.Mutable(of.ByName("inner_map")).Map().Set(protoreflect.ValueOfString("k").MapKey(), protoreflect.ValueOfMessage(newInner()))

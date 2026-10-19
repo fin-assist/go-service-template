@@ -119,7 +119,10 @@ Priorities when they pull apart, in this order:
   never imports an adapter, pgx or gRPC; a handler converts messages and calls a usecase; `wire()` connects them.
 - Errors to callers: only `finerr` constructors (`finerr.NotFound()`, `finerr.LimitExceeded(resetsAt)`).
   `status.Error`, `status.New`, `errdetails.ErrorInfo` are forbidden by the linter; an internal refusal is a bare
-  code through `bare()` in the server package. A new client reaction needs a new code in `contracts` first.
+  code through `bare()` in the server package. A new client reaction needs a new code in `contracts` first. A
+  handler may return a `finerr` error wrapped with `%w` or any other error: the interceptor sends the caller the
+  unwrapped status or a bare `INTERNAL` (`CANCELLED` / `DEADLINE_EXCEEDED` for context errors) and logs the
+  original, so no text of a wrapped error leaves the process (`docs/server.md`, step 10).
 - Identity: the user of a user call is `reqctx.UserID(ctx)` (the verified `sub`), never a request field; a system
   call takes `user_id` from the request. Every new method gets its row in `AccessPolicy()`, copied from
   grpc-api.md 3.3; the server does not start without it.
@@ -141,7 +144,9 @@ Priorities when they pull apart, in this order:
 - Dev-only hooks — `AUTH_MODE=insecure-dev`, dev verifiers and tokens, reflection, test helpers — stay unreachable
   outside `ENV=dev`: config rejects them, and code must not add another way around it.
 - Logs: `slog` `*Context` methods; no tokens, DSNs, statement contents or assistant dialogue in logs or errors.
-  Metric labels: bounded values only — never `user_id`, an operation ID or free text.
+  The debug log of a request masks `token` fields and clears every `bytes` field; other personal data in a
+  request is logged at `debug` as is. Metric labels: bounded values only — never `user_id`, an operation ID or
+  free text.
 - Document in moderation: a doc comment on exported identifiers of packages others use, comments where the logic is
   not obvious (accounting rules, idempotency, locks, transaction boundaries), not on every function.
 
