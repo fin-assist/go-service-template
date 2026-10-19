@@ -139,6 +139,10 @@ Priorities when they pull apart, in this order:
   initial set of partitions, `RAISE EXCEPTION` in an irreversible down file) runs once on `migrate up` /
   `migrate down`, is not runtime logic and is allowed. Future partitions are created by the service's job, never
   `pg_partman` (`docs/migrations.md`, «Партиции»).
+  A cross-row invariant (a former `EXCLUDE`, «one active row», non-overlapping intervals) is expressed by a unique
+  index where possible (a partial `UNIQUE`, for example); otherwise code checks it under a lock in the same `db.Run`
+  — `SELECT … FOR UPDATE` of the parent row or an advisory lock — and an integration test with two concurrent
+  writers on PostgreSQL covers it.
 - Clients of other services: `client.Dial` with `Retry` listing only reads and methods idempotent by construction;
   the context carries the deadline.
 - Time: "now" in business logic comes from an injected clock (`func() time.Time` or an interface passed by `wire()`),
