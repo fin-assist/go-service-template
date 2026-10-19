@@ -29,10 +29,13 @@ func normalize(err error) error {
 	}
 	var gs interface{ GRPCStatus() *status.Status }
 	if errors.As(err, &gs) {
-		if st := gs.GRPCStatus(); st != nil {
-			return st.Err()
+		st := gs.GRPCStatus()
+		if st == nil || st.Code() == codes.OK {
+			// A status of OK as an error would make st.Err() nil and the failed call a
+			// success with a nil response; neither finerr nor bare builds one.
+			return bare(codes.Internal)
 		}
-		return bare(codes.Internal)
+		return st.Err()
 	}
 	switch {
 	case errors.Is(err, context.Canceled):

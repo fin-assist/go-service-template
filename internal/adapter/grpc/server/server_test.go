@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,7 +79,13 @@ func (t *testService) UnaryCall(ctx context.Context, _ *testgrpc.SimpleRequest) 
 }
 
 func (t *testService) StreamingOutputCall(_ *testgrpc.StreamingOutputCallRequest, ss testgrpc.TestService_StreamingOutputCallServer) error {
+	if t.panic {
+		panic("stream handler bug")
+	}
 	t.got <- record(ss.Context())
+	if t.err != nil {
+		return t.err
+	}
 	return ss.Send(&testgrpc.StreamingOutputCallResponse{})
 }
 
@@ -269,12 +276,21 @@ func TestStream(t *testing.T) {
 func TestPanicIsInternalAndLogged(t *testing.T) {
 	e := start(t, policy())
 	e.svc.panic = true
-	_, err := testgrpc.NewTestServiceClient(e.conn).EmptyCall(call(t, "bank-bff", "u1"), &testgrpc.Empty{})
+	c := testgrpc.NewTestServiceClient(e.conn)
+	_, err := c.EmptyCall(call(t, "bank-bff", "u1"), &testgrpc.Empty{})
 	if status.Code(err) != codes.Internal || strings.Contains(status.Convert(err).Message(), "handler bug") {
-		t.Fatalf("got %v: want a bare INTERNAL without the panic text", err)
+		t.Fatalf("unary: got %v: want a bare INTERNAL without the panic text", err)
 	}
-	if !strings.Contains(e.logs.String(), "panic in handler") {
-		t.Fatal("panic must be logged")
+	st, err := c.StreamingOutputCall(call(t, "user", ""), &testgrpc.StreamingOutputCallRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Recv()
+	if status.Code(err) != codes.Internal || strings.Contains(status.Convert(err).Message(), "handler bug") {
+		t.Fatalf("stream: got %v: want a bare INTERNAL without the panic text", err)
+	}
+	if n := strings.Count(e.logs.String(), "panic in handler"); n != 2 {
+		t.Fatalf("panic must be logged for both calls, got %d lines", n)
 	}
 }
 
@@ -296,38 +312,117 @@ func TestUserTokenWithoutSubjectIsRefused(t *testing.T) {
 	}
 }
 
-// What the handler returns without a status must not travel to the caller as text:
-// grpc-go would send UNKNOWN with err.Error() as the message.
-func TestHandlerErrorsAreNormalized(t *testing.T) {
-	const secret = `relation "user_secret" does not exist`
-	cases := []struct {
-		name   string
-		err    error
-		code   codes.Code
-		reason string
-	}{
-		{"plain error", errors.New(secret), codes.Internal, ""},
-		{"wrapped registry error", fmt.Errorf("load %s: %w", secret, finerr.NotFound()), codes.NotFound, "NOT_FOUND"},
-		{"wrapped deadline", fmt.Errorf("query %s: %w", secret, context.DeadlineExceeded), codes.DeadlineExceeded, ""},
-		{"wrapped cancel", fmt.Errorf("query %s: %w", secret, context.Canceled), codes.Canceled, ""},
+// secretText stands for what an internal error may carry: a table name, a DSN, a path.
+const secretText = `relation "user_secret" does not exist`
+
+// normalizeCases are handler errors with what the caller must see instead. details lists
+// the detail types of a wrapped registry error that must survive the unwrapping.
+var normalizeCases = []struct {
+	name    string
+	err     error
+	code    codes.Code
+	reason  string
+	details []string
+}{
+	{"plain error", errors.New(secretText), codes.Internal, "", nil},
+	{"wrapped registry error", fmt.Errorf("load %s: %w", secretText, finerr.NotFound()), codes.NotFound, "NOT_FOUND", nil},
+	{"wrapped validation error", fmt.Errorf("check %s: %w", secretText,
+		finerr.ValidationError(&errdetails.BadRequest_FieldViolation{Field: "phone", Reason: "INVALID_FORMAT"})),
+		codes.InvalidArgument, "VALIDATION_ERROR", []string{"google.rpc.BadRequest"}},
+	{"wrapped rate limit", fmt.Errorf("limit %s: %w", secretText, finerr.RateLimited(time.Now().Add(time.Minute))),
+		codes.ResourceExhausted, "RATE_LIMITED", []string{"google.rpc.RetryInfo"}},
+	{"wrapped deadline", fmt.Errorf("query %s: %w", secretText, context.DeadlineExceeded), codes.DeadlineExceeded, "", nil},
+	{"wrapped cancel", fmt.Errorf("query %s: %w", secretText, context.Canceled), codes.Canceled, "", nil},
+}
+
+// detailNames lists the full names of the detail messages of a status.
+func detailNames(err error) []string {
+	var names []string
+	for _, d := range status.Convert(err).Details() {
+		if m, ok := d.(proto.Message); ok {
+			names = append(names, string(m.ProtoReflect().Descriptor().FullName()))
+		}
 	}
-	for _, tc := range cases {
+	return names
+}
+
+func TestNormalize(t *testing.T) {
+	if normalize(nil) != nil {
+		t.Fatal("nil must stay nil")
+	}
+	for _, same := range []error{bare(codes.Unavailable), finerr.NotFound(), finerr.LimitExceeded(time.Now())} {
+		if got := normalize(same); !proto.Equal(status.Convert(got).Proto(), status.Convert(same).Proto()) {
+			t.Fatalf("a status must pass unchanged: %v -> %v", same, got)
+		}
+	}
+	for _, tc := range normalizeCases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := start(t, policy())
-			e.svc.err = tc.err
-			_, err := testgrpc.NewTestServiceClient(e.conn).UnaryCall(call(t, "bank-bff", "u1"), &testgrpc.SimpleRequest{})
-			<-e.svc.got
-			st := status.Convert(err)
-			if st.Code() != tc.code || reasonOf(err) != tc.reason {
-				t.Fatalf("got %v (reason %q), want %v %q", err, reasonOf(err), tc.code, tc.reason)
+			got := normalize(tc.err)
+			st := status.Convert(got)
+			if st.Code() != tc.code || Reason(got) != tc.reason || strings.Contains(st.Message(), "user_secret") {
+				t.Fatalf("got %v, want %v %q without the wrapping text", got, tc.code, tc.reason)
 			}
-			if strings.Contains(st.Message(), "user_secret") {
-				t.Fatalf("the handler's text reached the caller: %q", st.Message())
+			for _, want := range tc.details {
+				if !slices.Contains(detailNames(got), want) {
+					t.Fatalf("detail %s lost: %v", want, detailNames(got))
+				}
 			}
-			if !strings.Contains(e.logs.String(), "user_secret") {
-				t.Fatalf("the cause must be in the log: %s", e.logs.String())
+			if _, ok := finerr.ToREST(got); ok != (tc.reason != "") {
+				t.Fatalf("bank-bff translation ok=%v for %v", ok, got)
 			}
 		})
+	}
+	// A status of OK presented as an error would turn the failure into a success.
+	okErr := fmt.Errorf("wrapped: %w", okStatus{})
+	if st := status.Convert(normalize(okErr)); st.Code() != codes.Internal {
+		t.Fatalf("OK status as an error: got %v, want INTERNAL", st.Code())
+	}
+}
+
+// okStatus is an error whose status is OK, which no constructor here builds.
+type okStatus struct{}
+
+func (okStatus) Error() string              { return "ok" }
+func (okStatus) GRPCStatus() *status.Status { return status.New(codes.OK, "ok") } //nolint:forbidigo // a malformed status for the test
+
+// What the handler returns without a status must not travel to the caller as text:
+// grpc-go would send UNKNOWN with err.Error() as the message. Unary and stream handlers
+// go through separate interceptors, so both are exercised.
+func TestHandlerErrorsAreNormalized(t *testing.T) {
+	for _, tc := range normalizeCases {
+		for _, kind := range []string{"unary", "stream"} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				e := start(t, policy())
+				e.svc.err = tc.err
+				c := testgrpc.NewTestServiceClient(e.conn)
+				var err error
+				if kind == "unary" {
+					_, err = c.UnaryCall(call(t, "bank-bff", "u1"), &testgrpc.SimpleRequest{})
+				} else {
+					var st testgrpc.TestService_StreamingOutputCallClient
+					if st, err = c.StreamingOutputCall(call(t, "user", ""), &testgrpc.StreamingOutputCallRequest{}); err != nil {
+						t.Fatal(err)
+					}
+					_, err = st.Recv()
+				}
+				<-e.svc.got
+				st := status.Convert(err)
+				if st.Code() != tc.code || reasonOf(err) != tc.reason {
+					t.Fatalf("got %v (reason %q), want %v %q", err, reasonOf(err), tc.code, tc.reason)
+				}
+				if strings.Contains(st.Message(), "user_secret") {
+					t.Fatalf("the handler's text reached the caller: %q", st.Message())
+				}
+				for _, want := range tc.details {
+					if !slices.Contains(detailNames(err), want) {
+						t.Fatalf("detail %s lost on the wire: %v", want, detailNames(err))
+					}
+				}
+				if !strings.Contains(e.logs.String(), "user_secret") {
+					t.Fatalf("the cause must be in the log: %s", e.logs.String())
+				}
+			})
+		}
 	}
 }
 
