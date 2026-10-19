@@ -190,22 +190,30 @@ func violationCode(ruleID string) string {
 
 var formatRules = regexp.MustCompile(`\.(pattern|email|hostname|ip|ipv4|ipv6|uri|uri_ref|uuid|tuuid|address|well_known_regex|prefix|suffix|contains|not_contains|well_known)(_|$)|\.(defined_only)$`)
 
-// observe logs the call and records RED metrics. err is what the caller gets, cause is
-// what the handler returned before normalize (the same error when nothing was hidden):
-// the log line carries the cause, the metrics and the client see err. Labels: method,
-// code, reason — never user_id or another unbounded value (grpc-api.md 9).
-func (s *Server) observe(ctx context.Context, method string, start time.Time, req any, err, cause error) {
+// callInfo is what the interceptors know about a request for its log line and metrics.
+type callInfo struct {
+	method string
+	start  time.Time
+	req    any // the request message of a unary call; nil for a stream
+}
+
+// finish ends a call: cause is what the handler (or an interceptor) returned, the result
+// is what the caller gets (normalize). The log line carries the cause, the metrics and the
+// caller see the result. Labels: method, code, reason — never user_id or another unbounded
+// value (grpc-api.md 9).
+func (s *Server) finish(ctx context.Context, c callInfo, cause error) error {
+	err := normalize(cause)
 	code := status.Code(err)
 	r := Reason(err)
-	s.handled.WithLabelValues(method, code.String(), r).Inc()
-	s.duration.WithLabelValues(method).Observe(time.Since(start).Seconds())
+	s.handled.WithLabelValues(c.method, code.String(), r).Inc()
+	s.duration.WithLabelValues(c.method).Observe(time.Since(c.start).Seconds())
 
 	level := slog.LevelInfo
 	switch code {
 	case codes.Internal, codes.Unknown, codes.DataLoss:
 		level = slog.LevelError
 	}
-	attrs := []any{"method", method, "code", code.String(), "duration_ms", time.Since(start).Milliseconds()}
+	attrs := []any{"method", c.method, "code", code.String(), "duration_ms", time.Since(c.start).Milliseconds()}
 	if r != "" {
 		attrs = append(attrs, "reason", r)
 	}
@@ -216,11 +224,12 @@ func (s *Server) observe(ctx context.Context, method string, start time.Time, re
 	if s.log.Enabled(ctx, slog.LevelDebug) {
 		md, _ := metadata.FromIncomingContext(ctx)
 		attrs = append(attrs, "metadata", maskMetadata(md))
-		if m, ok := req.(proto.Message); ok {
+		if m, ok := c.req.(proto.Message); ok {
 			attrs = append(attrs, "request", maskMessage(m))
 		}
 	}
 	s.log.Log(ctx, level, "grpc call", attrs...)
+	return err
 }
 
 func (s *Server) recover(ctx context.Context, method string, err *error) {
@@ -231,15 +240,11 @@ func (s *Server) recover(ctx context.Context, method string, err *error) {
 }
 
 // The deferred functions run in reverse order: recover turns a panic into a bare INTERNAL,
-// then the error is normalized for the caller and the call is logged with its cause.
+// then finish normalizes the error for the caller and logs the call with its cause.
 func (s *Server) unary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
-	start := time.Now()
+	c := callInfo{method: info.FullMethod, start: time.Now(), req: req}
 	ctx = withRequestID(ctx)
-	defer func() {
-		cause := err
-		err = normalize(err)
-		s.observe(ctx, info.FullMethod, start, req, err, cause)
-	}()
+	defer func() { err = s.finish(ctx, c, err) }()
 	defer s.recover(ctx, info.FullMethod, &err)
 
 	if ctx, err = s.authorize(ctx, info.FullMethod); err != nil {
@@ -252,13 +257,9 @@ func (s *Server) unary(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 }
 
 func (s *Server) stream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
-	start := time.Now()
+	c := callInfo{method: info.FullMethod, start: time.Now()}
 	ctx := withRequestID(ss.Context())
-	defer func() {
-		cause := err
-		err = normalize(err)
-		s.observe(ctx, info.FullMethod, start, nil, err, cause)
-	}()
+	defer func() { err = s.finish(ctx, c, err) }()
 	defer s.recover(ctx, info.FullMethod, &err)
 
 	if ctx, err = s.authorize(ctx, info.FullMethod); err != nil {
