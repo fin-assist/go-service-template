@@ -136,8 +136,9 @@ Priorities when they pull apart, in this order:
   separate case, a key, and is allowed too. Not allowed: `CHECK`, `EXCLUDE`, triggers, stored functions or procedures,
   domains with constraints. Such invariants live in `internal/domain` or the usecase with unit tests; actions on a
   write (`pg_notify` included) run in the service's own `db.Run`. DDL inside a migration (a `DO` block creating the
-  first partition, `RAISE EXCEPTION` in an irreversible down file) runs once on `migrate up` / `migrate down`, is not
-  runtime logic and is allowed.
+  initial set of partitions, `RAISE EXCEPTION` in an irreversible down file) runs once on `migrate up` /
+  `migrate down`, is not runtime logic and is allowed. Future partitions are created by the service's job, never
+  `pg_partman` (`docs/migrations.md`, «Партиции»).
 - Clients of other services: `client.Dial` with `Retry` listing only reads and methods idempotent by construction;
   the context carries the deadline.
 - Time: "now" in business logic comes from an injected clock (`func() time.Time` or an interface passed by `wire()`),
