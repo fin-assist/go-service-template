@@ -70,8 +70,6 @@ class PolicyTests(unittest.TestCase):
             def get(self,path): return {'behind_by': 0}
         self.assertEqual(Fake('','x').base(),'main')
 
-if __name__ == '__main__': unittest.main()
-
 class NativeEvidenceTests(unittest.TestCase):
     def test_exact_pr_attempt_beats_push_skipped_and_extra_required_still_blocks(self):
         class Fake(GitHub):
@@ -257,3 +255,6 @@ class TargetOwnerProtectionTests(unittest.TestCase):
             api.rule=copy.deepcopy(rule);mutate(api.rule);self.assertFalse(api.protection('main',['go']))
         api.rule=copy.deepcopy(rule);api.rule['block_creations']['enabled']=False
         self.assertTrue(api.protection('main',['go']));self.assertFalse(api.protection('release/1.0.0',['go']))
+
+if __name__ == '__main__':
+    unittest.main()

@@ -496,6 +496,27 @@ def validate_receipts(data):
             raise ValueError('Invalid protected comment identity')
 
 
+def explain_spent_retry(api, config, number, key, receipt, body):
+    """Repair an informational PR notice; comments never change retry authority."""
+    comments = api.pages(f'issues/{number}/comments')
+    comment = next((item for item in comments if item.get('id') == receipt.get('comment_id')), None)
+    if comment is not None:
+        if comment.get('body') != body:
+            api.request('PATCH', f"issues/comments/{comment['id']}", {'body': body})
+        return
+    comment = next((item for item in comments if (item.get('user') or {}).get('login') == config['controllerLogin']
+                    and item.get('body', '').startswith(body.split(' -->', 1)[0] + ' -->')), None)
+    if comment is None:
+        comment = api.request('POST', f'issues/{number}/comments', {'body': body})
+    elif comment.get('body') != body:
+        api.request('PATCH', f"issues/comments/{comment['id']}", {'body': body})
+    latest, latest_sha = api.read_receipts()
+    if latest.get(key, {}).get('state') != receipt['state']:
+        raise ValueError('Protected retry receipt changed during owner notice repair')
+    latest[key]['comment_id'] = comment['id']
+    api.write_receipts(latest, latest_sha)
+
+
 def reconcile(api, config, trigger=None, mutate_prs=True):
     if api.identity() != config['controllerLogin']:
         raise ValueError('Mutation credential identity differs from controllerLogin; no retry claim is allowed')
@@ -591,6 +612,19 @@ def reconcile_pr(api, config, base, candidate, trigger):
             api.request('PUT', f'pulls/{number}/merge', {'sha': sha, 'merge_method': merge_method})
         return
     decision = retry_decision(verdicts, state, sha)
+    if decision['action'] == 'wait' and state is not None and state.get('sha') == sha:
+        # A persisted budget must not turn a failed/unknown dispatch into a
+        # permanently green no-op. Never reset it or spend a second retry.
+        claims = state.get('runs', {})
+        if isinstance(claims, dict) and any(isinstance(claims.get(name), dict) and claims[name].get('retried') is True
+               and claims[name].get('run_id') == run['id']
+               and claims[name].get('attempt') == run['run_attempt']
+               and run['status'] == 'completed' and run['conclusion'] == 'failure'
+               for name, run in verdicts.items()):
+            print(f'PR {number}: claimed retry has not advanced; owner must inspect Actions; budget retained')
+            body = MARKER + json.dumps(state) + ' -->\nАвтоматический retry ещё не подтверждён новым attempt; dispatch неизвестен или не отправлен. Бюджет сохранён. Владелец: проверьте Actions и при необходимости вручную выберите Re-run failed jobs. Автоматический второй retry запрещён.'
+            explain_spent_retry(api, config, number, receipt_key, receipt, body)
+            raise ValueError('Claimed retry has not advanced; owner inspection required')
     if decision['action'] == 'retry' and api.fresh(number, sha, base, runs):
         # Claim before calling rerun: event redelivery never spends a second retry.
         body = MARKER + json.dumps(decision['state']) + ' -->\nОдин автоматический повтор упавших проверок CI для SHA `' + sha + '`.'
@@ -627,7 +661,16 @@ def reconcile_pr(api, config, base, candidate, trigger):
         policy, policy_sha = api.read_policy()
         rules = policy.setdefault('packageRules', [])
         for rule in recovery + new_rules:
-            rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue'),old.get('matchJsonata')) != (rule['matchPackageNames'],rule.get('matchDatasources'),rule.get('matchNewValue'),rule.get('matchJsonata'))]
+            def identity(value):
+                return tuple(value.get(key) for key in ('matchPackageNames', 'matchDatasources', 'matchNewValue', 'matchJsonata'))
+            def generation(value):
+                match = re.fullmatch(r'fin211-retry-([0-9]+)-', value.get('additionalBranchPrefix', ''))
+                return int(match[1]) if match else 0
+            matching = [old for old in rules if identity(old) == identity(rule)]
+            # Reopened/late old PRs must never restore an already consumed prefix.
+            if any(generation(old) > generation(rule) for old in matching):
+                continue
+            rules[:] = [old for old in rules if identity(old) != identity(rule)]
             rules.append(rule)
         # Exact failed values override family recreation.
         rules.sort(key=lambda rule: rule.get('description') != 'FIN-211: recovery of an automatically failed dependency family')
