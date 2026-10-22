@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "local>fin-assist/go-service-template:renovate-base",
+    "local>fin-assist/go-service-template:base#renovate-policy",
     "local>fin-assist/go-service-template:policy#renovate-policy"
   ],
   "automerge": false,

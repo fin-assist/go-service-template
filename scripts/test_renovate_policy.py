@@ -107,3 +107,12 @@ class TokenBoundaryTests(unittest.TestCase):
             api.request('PUT','pulls/1/merge',{'sha':'abc'})
         self.assertEqual(captured,[('GET','Bearer read-placeholder'),('PUT','Bearer policy-placeholder')])
         with self.assertRaises(ValueError): GitHub('policy-placeholder','x').get('commits/abc/check-runs')
+
+class DigestUpdateTests(unittest.TestCase):
+    def test_quarantine_matches_digest_not_moving_tag(self):
+        item={'depName':'postgres','newValue':'18','datasource':'docker','newDigest':'sha256:abc'}
+        rule=quarantine_rules([item],42)[0]
+        self.assertNotIn('matchNewValue',rule)
+        self.assertEqual(rule['matchJsonata'],['newDigest = "sha256:abc"'])
+        encoded=base64.b64encode(json.dumps([item]).encode()).decode()
+        self.assertEqual(updates(UPDATES+encoded+' -->'),[item])

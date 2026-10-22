@@ -167,3 +167,15 @@ const [minor] = await branches(minorConfig, [dependency('a', '3.1.1', '3.0.0', '
 assert.equal(minor.dependencyDashboardApproval, false);
 assert.equal((await gate(minor)).result, passed);
 console.log('PASS: newer minor/patch values remain eligible');
+
+// Moving tags must not hide a newer security/fixed digest under the same tag.
+const { applyPackageRules } = await import(mod('util/package-rules/index.js'));
+const controllerPath = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py', import.meta.url));
+const digestInput = [{ depName:'postgres', datasource:'docker', newValue:'18', newDigest:'sha256:bad' }];
+const digestCode = "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.quarantine_rules(json.loads(sys.argv[2]),99)))";
+const digestRules = JSON.parse(execFileSync('python3',['-c',digestCode,controllerPath,JSON.stringify(digestInput)],{encoding:'utf8',timeout:5000}));
+for (const newDigest of ['sha256:bad','sha256:fixed']) {
+  const matched = await applyPackageRules({ packageName:'postgres', depName:'postgres', datasource:'docker', newValue:'18', newDigest, packageRules:digestRules }, 'test');
+  assert.equal(matched.dependencyDashboardApproval === true, newDigest === 'sha256:bad');
+}
+console.log('PASS: fixed digest under the same tag escapes exact failed-digest approval');

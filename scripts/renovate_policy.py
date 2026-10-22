@@ -42,8 +42,15 @@ def updates(body):
         if not isinstance(item, dict):
             raise ValueError('Invalid upgrade')
         entry = {key: item.get(key) for key in ('depName', 'newValue', 'datasource')}
-        if not all(isinstance(v, str) and 0 < len(v) < 512 for v in entry.values()):
+        entry['depName'] = item.get('packageName') or entry['depName']
+        digest = item.get('newDigest')
+        if digest is not None:
+            entry['newDigest'] = digest
+        mandatory = [entry['depName'], entry['datasource'], digest or entry['newValue']]
+        if not all(isinstance(v, str) and 0 < len(v) < 512 for v in mandatory):
             raise ValueError('Invalid upgrade identity')
+        if entry['newValue'] is not None and not isinstance(entry['newValue'], str):
+            raise ValueError('Invalid upgrade value')
         result.append(entry)
     return result
 
@@ -55,16 +62,25 @@ def compose_update(items):
 
 def quarantine_rules(items, generation):
     # Exact proposed value, including a major's full version, never an entire major.
-    return [{
-        'description': 'FIN-211: failed twice; retry explicitly in Dependency Dashboard',
-        'matchPackageNames': [x['depName']],
-        'matchDatasources': [x['datasource']],
-        'matchNewValue': '/^' + re.escape(x['newValue']) + '$/',
-        'dependencyDashboardApproval': True,
-        'recreateWhen': 'never',
-        'groupName': None,
-        'additionalBranchPrefix': f'fin211-retry-{generation}-',
-    } for x in items]
+    rules = []
+    for item in items:
+        rule = {
+            'description': 'FIN-211: failed twice; retry explicitly in Dependency Dashboard',
+            'matchPackageNames': [item['depName']],
+            'matchDatasources': [item['datasource']],
+            'dependencyDashboardApproval': True,
+            'recreateWhen': 'never',
+            'groupName': None,
+            'additionalBranchPrefix': f'fin211-retry-{generation}-',
+        }
+        if item.get('newDigest'):
+            # A moving tag must not quarantine a future fixed digest of that tag.
+            rule['matchJsonata'] = ['newDigest = ' + json.dumps(item['newDigest'])]
+        else:
+            rule['matchNewValue'] = '/^' + re.escape(item['newValue']) + '$/'
+        rules.append(rule)
+    return rules
+
 
 
 def trusted(pr, commits, repo):
@@ -325,7 +341,7 @@ def reconcile(api, config, trigger=None):
             policy, policy_sha = api.read_policy()
             rules = policy.setdefault('packageRules', [])
             for rule in new_rules:
-                rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue')) != (rule['matchPackageNames'],rule['matchDatasources'],rule['matchNewValue'])]
+                rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue'),old.get('matchJsonata')) != (rule['matchPackageNames'],rule['matchDatasources'],rule.get('matchNewValue'),rule.get('matchJsonata'))]
                 rules.append(rule)
             # Persist version-scoped approval BEFORE closing, including major/groups.
             api.write_policy(policy, policy_sha)
