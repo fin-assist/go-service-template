@@ -43,6 +43,8 @@ def updates(body):
             raise ValueError('Invalid upgrade')
         entry = {key: item.get(key) for key in ('depName', 'newValue', 'datasource')}
         entry['depName'] = item.get('packageName') or entry['depName']
+        if type(item.get('newMajor')) is int and item['newMajor'] >= 0:
+            entry['newMajor'] = item['newMajor']
         digest = item.get('newDigest')
         if digest is not None:
             entry['newDigest'] = digest
@@ -83,11 +85,36 @@ def quarantine_rules(items, generation):
 
 
 
+def recovery_rules(items, generation):
+    """Rotate cache identities only for an automatically failed dependency family."""
+    rules = []
+    for item in items:
+        rule = {
+            'description': 'FIN-211: recovery of an automatically failed dependency family',
+            'matchPackageNames': [item['depName']],
+            'matchDatasources': [item['datasource']],
+            'additionalBranchPrefix': f'fin211-recovery-{generation}-',
+        }
+        major = item.get('newMajor')
+        if type(major) is not int:
+            match = re.match(r'^[~^=v ]*(\d+)(?:\.|$)', item.get('newValue') or '')
+            major = int(match[1]) if match else None
+        if major is not None:
+            rule['matchJsonata'] = ['newMajor = ' + str(major)]
+        elif item.get('newDigest') and item.get('newValue'):
+            rule['matchNewValue'] = '/^' + re.escape(item['newValue']) + '$/'
+        else:
+            # Opaque non-major values use their version-specific default PR keys.
+            continue
+        rules.append(rule)
+    return rules
+
+
 def trusted(pr, commits, repo):
     return (pr.get('state') == 'open' and not pr.get('draft')
             and pr.get('user', {}).get('id') == BOT_ID
             and pr.get('user', {}).get('login') == BOT
-            and pr.get('head', {}).get('repo', {}).get('full_name') == repo
+            and (pr.get('head', {}).get('repo') or {}).get('full_name') == repo
             and pr.get('head', {}).get('ref', '').startswith('renovate/')
             and bool(commits) and len(commits) == pr.get('commits') and len(commits) <= 250
             and all((c.get('author') or {}).get('id') == BOT_ID
@@ -151,6 +178,19 @@ class GitHub:
             return value['behind_by'] == 0
         return selected_base(branches, merged, ancestor)
 
+    def sync_baseline(self, base):
+        # Read approved JSON from a pinned target commit, never execute target code.
+        branch = self.get('branches/' + urllib.parse.quote(base, safe=''))
+        source = self.get('contents/renovate-base.json?ref=' + branch['commit']['sha'])
+        baseline = base64.b64decode(source['content'])
+        json.loads(baseline)  # Refuse an invalid source without replacing the preset.
+        current = self.get('contents/base.json?ref=' + POLICY_BRANCH)
+        if baseline != base64.b64decode(current['content']):
+            self.request('PUT', 'contents/base.json', {
+                'branch': POLICY_BRANCH, 'sha': current['sha'],
+                'message': 'Sync approved Renovate baseline from target branch',
+                'content': base64.b64encode(baseline).decode()})
+
     def bootstrap(self):
         try:
             self.get('git/ref/heads/' + POLICY_BRANCH)
@@ -159,7 +199,7 @@ class GitHub:
             if error.code != 404:
                 raise
         policy = {'baseBranchPatterns': [self.base()], 'packageRules': []}
-        tree = self.request('POST', 'git/trees', {'tree': [{'path': 'policy.json', 'mode': '100644', 'type': 'blob', 'content': json.dumps(policy, indent=2)+'\n'}]})
+        tree = self.request('POST', 'git/trees', {'tree': [{'path': 'policy.json', 'mode': '100644', 'type': 'blob', 'content': json.dumps(policy, indent=2)+'\n'}, {'path': 'base.json', 'mode': '100644', 'type': 'blob', 'content': Path('renovate-base.json').read_text()}]})
         commit = self.request('POST', 'git/commits', {'message': 'Initialize generated Renovate policy', 'tree': tree['sha'], 'parents': []})
         self.request('POST', 'git/refs', {'ref': 'refs/heads/' + POLICY_BRANCH, 'sha': commit['sha']})
 
@@ -331,6 +371,7 @@ def retry_decision(runs, state, sha):
 
 def reconcile(api, config, trigger=None):
     base = api.base()
+    api.sync_baseline(base)
     policy, policy_sha = api.read_policy()
     if policy.get('baseBranchPatterns') != [base]:
         policy['baseBranchPatterns'] = [base]
@@ -389,7 +430,7 @@ def reconcile(api, config, trigger=None):
         if all(run['conclusion'] == 'success' for run in runs.values()) and all(j['conclusion'] == 'success' for j in required):
             if compose_update(items) or api.android_stack_changed(pr):
                 continue
-            # All check runs/statuses (not just the configured jobs) must be green.
+            # All native required checks/statuses must be green.
             if any(c['conclusion'] != 'success' for c in native):
                 continue
             current = api.fresh(number, sha, base, runs)
@@ -416,12 +457,15 @@ def reconcile(api, config, trigger=None):
                 api.request('PATCH', f"issues/comments/{claim['id']}", {'body': body + '\nЗапрос повтора завершился ошибкой API; claim сохранён, чтобы не запускать дубликаты. Владелец: проверьте Actions run и при необходимости вручную выберите Re-run failed jobs. Следующая завершённая попытка будет оценена автоматически.'})
                 raise
         elif decision['action'] == 'close' and api.fresh(number, sha, base, runs):
+            recovery = recovery_rules(items, number)
             new_rules = quarantine_rules(items, number)
             policy, policy_sha = api.read_policy()
             rules = policy.setdefault('packageRules', [])
-            for rule in new_rules:
+            for rule in recovery + new_rules:
                 rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue'),old.get('matchJsonata')) != (rule['matchPackageNames'],rule['matchDatasources'],rule.get('matchNewValue'),rule.get('matchJsonata'))]
                 rules.append(rule)
+            # Exact failed values override family recovery prefixes.
+            rules.sort(key=lambda rule: rule.get('description') != 'FIN-211: recovery of an automatically failed dependency family')
             # Persist version-scoped approval BEFORE closing, including major/groups.
             api.write_policy(policy, policy_sha)
             current = api.fresh(number, sha, base, runs)

@@ -116,3 +116,28 @@ class DigestUpdateTests(unittest.TestCase):
         self.assertEqual(rule['matchJsonata'],['newDigest = "sha256:abc"'])
         encoded=base64.b64encode(json.dumps([item]).encode()).decode()
         self.assertEqual(updates(UPDATES+encoded+' -->'),[item])
+
+class BaselineSyncTests(unittest.TestCase):
+    def test_release_baseline_is_pinned_and_synced_without_source_override(self):
+        class Fake(GitHub):
+            def __init__(self):super().__init__('','x');self.writes=[];self.reads=[]
+            def get(self,path):
+                self.reads.append(path)
+                if path=='branches/release%2F0.2.12':return {'commit':{'sha':'approved-release-sha'}}
+                if path=='contents/renovate-base.json?ref=approved-release-sha':return {'content':base64.b64encode(b'{"packageRules":[{"allowedVersions":"<2"}]}').decode()}
+                if path=='contents/base.json?ref=renovate-policy':return {'sha':'old-preset-sha','content':base64.b64encode(b'{}').decode()}
+                raise AssertionError(path)
+            def request(self,method,path,data):self.writes.append((path,data))
+        api=Fake();api.sync_baseline('release/0.2.12')
+        self.assertEqual(json.loads(base64.b64decode(api.writes[0][1]['content'])),{'packageRules':[{'allowedVersions':'<2'}]})
+        self.assertEqual(api.writes[0][1]['sha'],'old-preset-sha')
+        self.assertTrue(all('main' not in path for path in api.reads))
+
+class RecoveryFamilyTests(unittest.TestCase):
+    def test_recovery_is_limited_to_the_automatically_failed_major_family(self):
+        from renovate_policy import recovery_rules
+        rule=recovery_rules([{'depName':'x','datasource':'npm','newValue':'^4.0.0'}],42)[0]
+        self.assertEqual(rule['matchPackageNames'],['x'])
+        self.assertEqual(rule['matchJsonata'],['newMajor = 4'])
+        self.assertEqual(rule['additionalBranchPrefix'],'fin211-recovery-42-')
+        self.assertNotIn('recreateWhen',rule)

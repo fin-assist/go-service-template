@@ -21,6 +21,7 @@ class Fake(GitHub):
         self.config={'requiredChecks':['go'],'controllerLogin':'controller'}
         self.protected=True; self.before_fresh=None
     def base(self): return self.target
+    def sync_baseline(self,base):pass
     def read_policy(self):return copy.deepcopy(self.policy),'policy-sha'
     def write_policy(self,policy,sha):self.policy=copy.deepcopy(policy);self.actions.append(('policy',copy.deepcopy(policy)))
     def signed_commits(self,number):return self.commits
@@ -67,7 +68,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(sum(p=='actions/runs/1/rerun-failed-jobs' for p,_ in api.actions),1)
         api.run['run_attempt']=2;reconcile(api,api.config)
         self.assertEqual(api.pr['state'],'closed');self.assertEqual(len(api.comments),1)
-        self.assertTrue(api.policy['packageRules'][0]['dependencyDashboardApproval'])
+        self.assertTrue(any(rule.get('dependencyDashboardApproval') for rule in api.policy['packageRules']))
         self.assertLess(next(i for i,x in enumerate(api.actions) if x[0]=='policy'), next(i for i,x in enumerate(api.actions) if x[0]=='pulls/1'))
         reconcile(api,api.config);self.assertEqual(len(api.comments),1)
     def test_successful_retry_merges(self):
