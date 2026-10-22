@@ -298,3 +298,16 @@ assert.equal(nextStack.automerge,false);
 assert.equal((await gate(nextStack)).result,'needs-approval');
 assert.equal((await explicitApproval(nextStack,nextStackConfig)).result,passed);
 console.log('PASS: failed Compose stack stays one approval group across fixes and repeat failures without automerge');
+
+// A later immortal group containing only unaffected updates is not quarantined.
+const [previousMixedGroup] = await branches(config([]),[dependency('a','4.0.0'),dependency('b','5.0.0')]);
+ignore(previousMixedGroup);
+const unaffectedOnly = await branches(config(failureRules([update('a','4.0.0'),update('b','5.0.0')])),
+  [dependency('c','3.0.0'),dependency('d','6.0.0')]);
+assert.equal(unaffectedOnly.length,1);
+assert.equal(unaffectedOnly[0].branchName,previousMixedGroup.branchName);
+assert.equal(unaffectedOnly[0].prTitle,previousMixedGroup.prTitle);
+assert.equal(unaffectedOnly[0].recreateClosed,true);
+assert.equal(unaffectedOnly[0].dependencyDashboardApproval,false);
+assert.equal((await gate(unaffectedOnly[0])).result,passed);
+console.log('PASS: an unaffected-only immortal group remains eligible after a prior group failure');
