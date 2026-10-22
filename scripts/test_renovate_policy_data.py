@@ -164,3 +164,16 @@ class PolicyDataTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class PolicyReadWriteBoundaryTests(unittest.TestCase):
+    def test_real_read_and_write_reject_unexpected_native_automerge_before_mutation(self):
+        import base64
+        from renovate_policy import GitHub
+        class Fake(GitHub):
+            def get(self,path):return {'sha':'preset-sha','content':base64.b64encode(json.dumps(self.value).encode()).decode()}
+            def request(self,*args,**kwargs):raise AssertionError('Rejected policy must not be written')
+        api=Fake('','x');api.value=dict(policy(),automerge=True)
+        with self.assertRaises(ValueError):api.read_policy()
+        with self.assertRaises(ValueError):api.write_policy(api.value,'preset-sha')
+        from renovate_policy import compose_stack_rule
+        self.assertIs(validate_policy(policy(compose_stack_rule(123)))['packageRules'][0]['automerge'],False)

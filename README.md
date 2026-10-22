@@ -17,6 +17,8 @@
 6. Секреты репозитория: `CLAUDE_CODE_OAUTH_TOKEN` (ревью `@claude`), `GO_MODULES_TOKEN`, если подключаются приватные модули fin-assist. Установить Claude GitHub App и Codex.
 7. Обновить README и `AGENTS.md` под сервис.
 
+Перед первым запуском Renovate заменить **оба** `local>` ref в `renovate.json` на новый `fin-assist/<repo>`. GitHub template не копирует служебную ветку: создать собственную `renovate-policy` по [инструкции bootstrap](docs/renovate-policy.md#подготовка-и-включение), затем защитить её и настроить `controllerLogin`, обязательные checks и Environment `renovate-policy` с секретом только для `main`. Проверить, что оба presets разрешаются из нового репозитория, а не из шаблона. До проверки оставить `RENOVATE_POLICY_ENABLED` выключенным; секреты, environments и branch protection из шаблона не наследуются.
+
 ## Раскладка
 
 ```
@@ -60,7 +62,7 @@ make run
 
 - **Подключение** — по разделу «Внедрение» README библиотеки: `go get github.com/fin-assist/go-<имя>@vX.Y.Z`, источник миграций в `MigrationSources()` до источника сервиса, сборка в `wire()` — библиотека получает от сервиса транзакцию (`db.Tx`), логгер, реестр метрик, часы и настройки.
 - **Версии** — semver-теги библиотеки, `go.mod` сервиса закрепляет версию; до первого прода — `v0`, несовместимое изменение — новый MINOR с записью «Несовместимо» в CHANGELOG библиотеки. Правила — `docs/releasing.md` в `fin-assist/go-library-template`.
-- **Обновления приносит Renovate** (`renovate.json`): модули `github.com/fin-assist/*` (библиотеки и `contracts/gen/go`) — отдельный PR сразу после тега, остальные зависимости — один PR в неделю, версия Go — вручную. PR Renovate проходит CI сервиса; при несовместимом обновлении правки делаются в той же ветке по CHANGELOG библиотеки.
+- **Обновления приносит Renovate** (`renovate.json`): модули `github.com/fin-assist/*` (библиотеки и `contracts/gen/go`) — отдельный PR сразу после тега, остальные зависимости — один PR в неделю, версия Go — вручную. PR Renovate проходит CI сервиса и обрабатывается по [политике FIN-211](docs/renovate-policy.md). При несовместимом обновлении человеческий коммит в открытом PR переводит его на ручное сопровождение; если ботский PR уже закрыт после повторного падения, исправления сервиса идут отдельным PR с задачей YouTrack. Порядок миграции — по CHANGELOG библиотеки.
 - **Проверить библиотеку до выпуска** — локально `go mod edit -replace github.com/fin-assist/go-<имя>=../go-<имя>`; `replace` в PR сервиса не попадает.
 
 ## Проверки

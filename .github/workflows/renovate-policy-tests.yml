@@ -24,7 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      RENOVATE_RUNTIME: ${{ runner.temp }}/renovate-runtime
       LOG_LEVEL: error
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +35,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Set temporary runtime location
+        run: echo "RENOVATE_RUNTIME=$RUNNER_TEMP/renovate-runtime" >> "$GITHUB_ENV"
       - name: Install pinned Renovate without install scripts
         run: timeout 600s npm install --prefix "$RENOVATE_RUNTIME" --ignore-scripts --no-audit --no-fund renovate@44.176.2
       - name: Verify Renovate grouping, retries and digests
