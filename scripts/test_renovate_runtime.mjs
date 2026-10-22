@@ -250,3 +250,51 @@ const ignoredOtherTag = await digestBranch(digestRecoveryConfig,'19',fixedDigest
 assert.equal(ignoredOtherTag.recreateClosed,false);
 assert.equal((await gate(ignoredOtherTag)).result,'already-existed');
 console.log('PASS: numeric moving tag recovers fixed digests without newMajor; other tags stay ignored');
+
+// An automatically failed FIN-184 stack remains one jointly approved update.
+function stackRule(generation) {
+  const controller = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py',import.meta.url));
+  const code = "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.compose_stack_rule(int(sys.argv[2]))))";
+  return JSON.parse(execFileSync('python3',['-c',code,controller,String(generation)],{encoding:'utf8',timeout:5000}));
+}
+const firstStackRule = stackRule(987);
+const stackBaseline = {matchPackageNames:firstStackRule.matchPackageNames,
+  groupName:'androidx compose stack',separateMajorMinor:false,automerge:false};
+function stackDependencies(fixed = false) {
+  return [
+    ['androidx.compose:compose-bom',fixed?'2026.10.2':'2026.10.1','minor'],
+    ['androidx.activity:activity-compose',fixed?'1.10.2':'1.10.1','minor'],
+    ['androidx.navigation:navigation-compose',fixed?'3.0.2':'3.0.1','major'],
+  ].map(([name,value,type])=>({...dependency(name,value,'1.0.0',type),datasource:'maven'}));
+}
+const stackBaselineConfig = config([stackBaseline],{grouped:false});
+const [originalStack] = await branches(stackBaselineConfig,stackDependencies());
+assert.equal(originalStack.upgrades.length,3);
+assert.equal(originalStack.automerge,false);
+ignore(originalStack);
+const stackConfig = config([stackBaseline,firstStackRule],{grouped:false});
+const pendingStack = await branches(stackConfig,stackDependencies());
+assert.equal(pendingStack.length,1);
+assert.equal(pendingStack[0].upgrades.length,3);
+assert.equal(pendingStack[0].groupName,'androidx compose stack');
+assert.equal(pendingStack[0].automerge,false);
+assert.equal((await gate(pendingStack[0])).result,'needs-approval');
+await ensureDependencyDashboard({...stackConfig,dependencyDashboardChecks:{}},
+  [{...pendingStack[0],result:'needs-approval'}],{},{});
+assert.equal((dashboardBody.match(/<!-- approve-branch=/g)??[]).length,1);
+assert.equal((await explicitApproval(pendingStack[0],stackConfig)).result,passed);
+const futureStack = await branches(stackConfig,stackDependencies(true));
+assert.equal(futureStack.length,1);
+assert.equal(futureStack[0].upgrades.length,3);
+assert.equal(futureStack[0].branchName,pendingStack[0].branchName);
+assert.equal(futureStack[0].automerge,false);
+assert.equal((await gate(futureStack[0])).result,'needs-approval');
+ignore(pendingStack[0]);
+const nextStackConfig = config([stackBaseline,stackRule(988)],{grouped:false});
+const [nextStack] = await branches(nextStackConfig,stackDependencies(true));
+assert.ok(nextStack.branchName.includes('fin211-retry-988-'));
+assert.equal(nextStack.upgrades.length,3);
+assert.equal(nextStack.automerge,false);
+assert.equal((await gate(nextStack)).result,'needs-approval');
+assert.equal((await explicitApproval(nextStack,nextStackConfig)).result,passed);
+console.log('PASS: failed Compose stack stays one approval group across fixes and repeat failures without automerge');
