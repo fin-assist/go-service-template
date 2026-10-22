@@ -311,3 +311,28 @@ assert.equal(unaffectedOnly[0].recreateClosed,true);
 assert.equal(unaffectedOnly[0].dependencyDashboardApproval,false);
 assert.equal((await gate(unaffectedOnly[0])).result,passed);
 console.log('PASS: an unaffected-only immortal group remains eligible after a prior group failure');
+
+// A later singleton outside the failed dependencies must also remain eligible.
+const [unaffectedSingleton] = await branches(config(failureRules([update('a','4.0.0'),update('b','5.0.0')])),
+  [dependency('c','5.0.1')]);
+assert.equal(unaffectedSingleton.upgrades.length,1);
+assert.equal(unaffectedSingleton.branchName,previousMixedGroup.branchName);
+assert.equal(unaffectedSingleton.dependencyDashboardApproval,false);
+assert.equal((await gate(unaffectedSingleton)).result,passed);
+console.log('PASS: a single unaffected update remains eligible after the previous group closes');
+
+// Group behavior must not depend on the recovered dependency sorting first.
+const [beforeRecoveredOriginal] = await branches(config([]),[dependency('a','4.0.0'),dependency('z','5.0.0')]);
+ignore(beforeRecoveredOriginal);
+const [unaffectedSortsFirst] = await branches(config(failureRules([update('z','5.0.0')])),
+  [dependency('a','4.0.1'),dependency('z','5.0.1')]);
+assert.equal(unaffectedSortsFirst.upgrades.length,2);
+assert.equal(unaffectedSortsFirst.depName,'a');
+assert.equal(unaffectedSortsFirst.upgrades[0].recreateWhen,'auto');
+assert.equal(unaffectedSortsFirst.upgrades[1].recreateWhen,'always');
+assert.equal(unaffectedSortsFirst.branchName,beforeRecoveredOriginal.branchName);
+assert.equal(unaffectedSortsFirst.prTitle,beforeRecoveredOriginal.prTitle);
+assert.equal(unaffectedSortsFirst.recreateClosed,true);
+assert.equal(unaffectedSortsFirst.dependencyDashboardApproval,false);
+assert.equal((await gate(unaffectedSortsFirst)).result,passed);
+console.log('PASS: unaffected dependency sorts before recovered member without blocking the group');
