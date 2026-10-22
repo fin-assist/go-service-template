@@ -212,3 +212,41 @@ assert.equal(withUnaffected.upgrades.length,2);
 assert.equal(withUnaffected.branchName,originalGroup.branchName);
 assert.equal((await gate(withUnaffected)).result,passed);
 console.log('PASS: recovered and unaffected dependencies remain in one original group');
+
+// Full digest lifecycle: GitHub Actions/Docker digest upgrades need no newMajor.
+async function digestBranch(cfg, tag, digest) {
+  const update = {newValue:tag,newDigest:digest,updateType:'digest'};
+  assert.equal(Object.hasOwn(update,'newMajor'),false);
+  const {branches:[branch]} = await branchifyUpgrades(cfg,{dockerfile:[{
+    packageFile:'Dockerfile',deps:[{depName:'postgres',packageName:'postgres',
+      datasource:'docker',versioning:'docker',currentValue:tag,
+      currentDigest:'sha256:'+'0'.repeat(64),updates:[update]}],
+  }]});
+  assert.equal(Object.hasOwn(branch.upgrades[0],'newMajor'),false);
+  return branch;
+}
+const badDigest = 'sha256:'+'a'.repeat(64);
+const fixedDigest = 'sha256:'+'b'.repeat(64);
+const digestFailure = [{depName:'postgres',datasource:'docker',newValue:'18',newDigest:badDigest}];
+const unmodifiedDigestConfig = config([],{grouped:false});
+const originalDigest = await digestBranch(unmodifiedDigestConfig,'18',badDigest);
+ignore(originalDigest);
+const digestRecoveryConfig = config(failureRules(digestFailure,789),{grouped:false});
+const exactBadDigest = await digestBranch(digestRecoveryConfig,'18',badDigest);
+assert.equal((await gate(exactBadDigest)).result,'needs-approval');
+assert.equal((await explicitApproval(exactBadDigest,digestRecoveryConfig)).result,passed);
+const fixedSameTag = await digestBranch(digestRecoveryConfig,'18',fixedDigest);
+assert.equal(fixedSameTag.branchName,originalDigest.branchName);
+// This assertion detects recovery incorrectly matching newMajor=18: digest updates
+// do not carry newMajor, even though their moving tag happens to contain a number.
+assert.equal(fixedSameTag.recreateClosed,true);
+assert.equal(fixedSameTag.dependencyDashboardApproval,false);
+assert.equal((await gate(fixedSameTag)).result,passed);
+ignore(fixedSameTag);
+assert.equal((await gate(fixedSameTag)).result,passed);
+const otherTag = await digestBranch(unmodifiedDigestConfig,'19',fixedDigest);
+ignore(otherTag);
+const ignoredOtherTag = await digestBranch(digestRecoveryConfig,'19',fixedDigest);
+assert.equal(ignoredOtherTag.recreateClosed,false);
+assert.equal((await gate(ignoredOtherTag)).result,'already-existed');
+console.log('PASS: numeric moving tag recovers fixed digests without newMajor; other tags stay ignored');
