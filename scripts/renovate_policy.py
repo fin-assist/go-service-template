@@ -10,6 +10,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from renovate_policy_data import COMPOSE_PACKAGES
 
 BOT_ID = 29139614
 BOT = 'renovate[bot]'
@@ -29,7 +30,7 @@ def selected_base(branches, merged, ancestor):
         if match:
             versions.append((tuple(map(int, match.groups())), name))
     for _, name in sorted(versions, reverse=True):
-        if not (name in merged and ancestor(name)):
+        if not ((merged(name) if callable(merged) else name in merged) and ancestor(name)):
             return name
     return 'main'
 
@@ -69,12 +70,6 @@ def updates(body):
     return result
 
 
-COMPOSE_STACK_PACKAGES = [
-    'androidx.compose:compose-bom', 'androidx.activity:**', 'androidx.core:**',
-    'androidx.fragment:**', 'androidx.hilt:hilt-navigation-compose',
-    'androidx.lifecycle:**', 'androidx.navigation:**',
-]
-
 
 def compose_package(name):
     return name.startswith(('androidx.', 'org.jetbrains.compose',
@@ -87,13 +82,13 @@ def compose_update(items):
 
 
 def compose_stack_member(item):
-    return any(fnmatch.fnmatchcase(item['depName'], pattern) for pattern in COMPOSE_STACK_PACKAGES)
+    return any(fnmatch.fnmatchcase(item['depName'], pattern) for pattern in COMPOSE_PACKAGES)
 
 
 def compose_stack_rule(generation):
     return {
         'description': 'FIN-211: failed Compose stack requires grouped Dashboard approval',
-        'matchPackageNames': COMPOSE_STACK_PACKAGES,
+        'matchPackageNames': COMPOSE_PACKAGES,
         'groupName': 'androidx compose stack', 'separateMajorMinor': False,
         'dependencyDashboardApproval': True, 'recreateWhen': 'never',
         'additionalBranchPrefix': f'fin211-retry-{generation}-', 'automerge': False,
@@ -185,7 +180,7 @@ class GitHub:
         self.controller_login = None
 
     def request(self, method, path, data=None):
-        url = 'https://api.github.com' + path if path.startswith('/') else 'https://api.github.com/repos/' + self.repo + '/' + path
+        url = 'https://api.github.com' + path if path.startswith('/') else 'https://api.github.com/repos/' + self.repo + ('/' + path if path else '')
         token = self.read_token if method == 'GET' and '/check-runs' in path else self.token
         if not token:
             raise ValueError('Read-only checks token is required')
@@ -212,7 +207,11 @@ class GitHub:
 
     def base(self):
         branches = [x['name'] for x in self.pages('branches')]
-        merged = {x['head']['ref'] for x in self.pages('pulls?state=closed&base=main') if x.get('merged_at') and (x['head'].get('repo') or {}).get('full_name') == self.repo}
+        def merged(branch):
+            head = urllib.parse.quote(self.repo.split('/')[0] + ':' + branch, safe='')
+            return any(item.get('merged_at') and item['head']['ref'] == branch
+                       and (item['head'].get('repo') or {}).get('full_name') == self.repo
+                       for item in self.pages('pulls?state=closed&base=main&head=' + head))
         def ancestor(branch):
             # compare(base=release, head=main) behind/ahead semantics: release ancestor
             # iff there are zero commits exclusive to release (behind_by == 0).
