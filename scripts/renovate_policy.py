@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""Trusted default-branch controller for hosted Renovate, without merge bypasses."""
+import argparse
+import base64
+import json
+import os
+from pathlib import Path
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BOT_ID = 29139614
+BOT = 'renovate[bot]'
+POLICY_BRANCH = 'renovate-policy'
+MARKER = '<!-- fin211-state '
+UPDATES = '<!-- fin211-updates '
+
+
+def selected_base(branches, merged, ancestor):
+    """A release is retired only when BOTH the merge PR and ancestry prove it."""
+    versions = []
+    for name in branches:
+        match = re.fullmatch(r'release/(\d+)\.(\d+)\.(\d+)', name)
+        if match:
+            versions.append((tuple(map(int, match.groups())), name))
+    for _, name in sorted(versions, reverse=True):
+        if not (name in merged and ancestor(name)):
+            return name
+    return 'main'
+
+
+def updates(body):
+    match = re.search(re.escape(UPDATES) + r'(.+?) -->', body or '')
+    if not match:
+        return []
+    data = json.loads(base64.b64decode(match[1], validate=True))
+    if not isinstance(data, list) or not 0 < len(data) <= 100:
+        raise ValueError('Missing or oversized Renovate metadata')
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError('Invalid upgrade')
+        entry = {key: item.get(key) for key in ('depName', 'newValue', 'datasource')}
+        if not all(isinstance(v, str) and 0 < len(v) < 512 for v in entry.values()):
+            raise ValueError('Invalid upgrade identity')
+        result.append(entry)
+    return result
+
+
+def compose_update(items):
+    # Conservatively keep all AndroidX, Compose and mixed groups for the owner.
+    return any(x['depName'].startswith(('androidx.', 'org.jetbrains.compose')) for x in items)
+
+
+def quarantine_rules(items, generation):
+    # Exact proposed value, including a major's full version, never an entire major.
+    return [{
+        'description': 'FIN-211: failed twice; retry explicitly in Dependency Dashboard',
+        'matchPackageNames': [x['depName']],
+        'matchDatasources': [x['datasource']],
+        'matchNewValue': '/^' + re.escape(x['newValue']) + '$/',
+        'dependencyDashboardApproval': True,
+        'recreateWhen': 'never',
+        'groupName': None,
+        'additionalBranchPrefix': f'fin211-retry-{generation}-',
+    } for x in items]
+
+
+def trusted(pr, commits, repo):
+    return (pr.get('state') == 'open' and not pr.get('draft')
+            and pr.get('user', {}).get('id') == BOT_ID
+            and pr.get('user', {}).get('login') == BOT
+            and pr.get('head', {}).get('repo', {}).get('full_name') == repo
+            and pr.get('head', {}).get('ref', '').startswith('renovate/')
+            and bool(commits) and len(commits) == pr.get('commits') and len(commits) <= 250
+            and all((c.get('author') or {}).get('id') == BOT_ID
+                    and c.get('commit', {}).get('verification', {}).get('verified') is True
+                    and c.get('_trusted_signer') is True
+                    for c in commits))
+
+
+def terminal_checks(jobs, names):
+    """Only complete, unambiguous required jobs permit a decision."""
+    by_name = {}
+    for job in jobs:
+        if job['name'] in by_name:
+            return None
+        by_name[job['name']] = job
+    if not set(names) <= by_name.keys():
+        return None
+    required = [by_name[name] for name in names]
+    if any(j['status'] != 'completed' or j['conclusion'] not in ('success', 'failure') for j in required):
+        return None
+    return required
+
+
+class GitHub:
+    def __init__(self, token, repo, read_token=None):
+        self.token, self.repo, self.read_token = token, repo, read_token
+
+    def request(self, method, path, data=None):
+        url = 'https://api.github.com/repos/' + self.repo + '/' + path
+        token = self.read_token if method == 'GET' and '/check-runs' in path else self.token
+        if not token:
+            raise ValueError('Read-only checks token is required')
+        req = urllib.request.Request(url, method=method,
+            data=None if data is None else json.dumps(data).encode(),
+            headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json',
+                     'X-GitHub-Api-Version': '2022-11-28'})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            payload = response.read()
+        return json.loads(payload) if payload else None
+
+    def get(self, path):
+        return self.request('GET', path)
+
+    def pages(self, path, key=None):
+        result = []
+        for page in range(1, 101):
+            data = self.get(path + ('&' if '?' in path else '?') + f'per_page=100&page={page}')
+            values = data[key] if key else data
+            result.extend(values)
+            if len(values) < 100:
+                return result
+        raise ValueError('Pagination limit exceeded; refusing partial evidence')
+
+    def base(self):
+        branches = [x['name'] for x in self.pages('branches')]
+        merged = {x['head']['ref'] for x in self.pages('pulls?state=closed&base=main') if x.get('merged_at') and (x['head'].get('repo') or {}).get('full_name') == self.repo}
+        def ancestor(branch):
+            # compare(base=release, head=main) behind/ahead semantics: release ancestor
+            # iff there are zero commits exclusive to release (behind_by == 0).
+            value = self.get('compare/' + urllib.parse.quote(branch, safe='') + '...main')
+            return value['behind_by'] == 0
+        return selected_base(branches, merged, ancestor)
+
+    def bootstrap(self):
+        try:
+            self.get('git/ref/heads/' + POLICY_BRANCH)
+            raise ValueError('Policy branch already exists; refusing to overwrite')
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+        policy = {'baseBranchPatterns': [self.base()], 'packageRules': []}
+        tree = self.request('POST', 'git/trees', {'tree': [{'path': 'policy.json', 'mode': '100644', 'type': 'blob', 'content': json.dumps(policy, indent=2)+'\n'}]})
+        commit = self.request('POST', 'git/commits', {'message': 'Initialize generated Renovate policy', 'tree': tree['sha'], 'parents': []})
+        self.request('POST', 'git/refs', {'ref': 'refs/heads/' + POLICY_BRANCH, 'sha': commit['sha']})
+
+    def read_policy(self):
+        try:
+            obj = self.get('contents/policy.json?ref=' + POLICY_BRANCH)
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise ValueError('Policy branch not bootstrapped; see docs/renovate-policy.md') from error
+            raise
+        return json.loads(base64.b64decode(obj['content'])), obj['sha']
+
+    def write_policy(self, policy, sha):
+        self.request('PUT', 'contents/policy.json', {
+            'branch': POLICY_BRANCH, 'sha': sha,
+            'message': 'Update Renovate target and failed-version approvals',
+            'content': base64.b64encode((json.dumps(policy, indent=2) + '\n').encode()).decode()})
+
+    def signed_commits(self, number):
+        commits = self.pages(f'pulls/{number}/commits')
+        for commit in commits:
+            query = {"query": "query($owner:String!,$name:String!,$sha:String!){repository(owner:$owner,name:$name){object(oid:$sha){... on Commit{signature{isValid signer{login}}}}}}", "variables": dict(zip(('owner','name'), self.repo.split('/')), sha=commit['sha'])}
+            req = urllib.request.Request('https://api.github.com/graphql', method='POST',
+                    data=json.dumps(query).encode(), headers={'Authorization':'Bearer '+self.token, 'Content-Type':'application/json'})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                data = json.load(response)
+            signature = (((data.get('data') or {}).get('repository') or {}).get('object') or {}).get('signature') or {}
+            committer = (commit.get('committer') or {}).get('login')
+            signer = (signature.get('signer') or {}).get('login')
+            commit['_trusted_signer'] = signature.get('isValid') is True and signer == committer and signer in ('web-flow', BOT)
+        return commits
+
+    def current_run(self, pr):
+        runs = self.pages('actions/workflows/ci.yml/runs?event=pull_request&head_sha=' + pr['head']['sha'], 'workflow_runs')
+        # A run from another PR, base, or stale head must never count.
+        runs = [r for r in runs if r['head_sha'] == pr['head']['sha'] and
+                any(p['number'] == pr['number'] and p['base']['ref'] == pr['base']['ref'] for p in r['pull_requests'])]
+        return max(runs, key=lambda r: r['id']) if runs else None
+
+    def fresh(self, number, sha, base, run=None):
+        pr = self.get(f'pulls/{number}')
+        commits = self.signed_commits(number)
+        if not trusted(pr, commits, self.repo) or pr['head']['sha'] != sha or pr['base']['ref'] != base or self.base() != base:
+            return None
+        if run:
+            current = self.current_run(pr)
+            if not current or any(current.get(k) != run.get(k) for k in ('id', 'run_attempt', 'head_sha', 'status', 'conclusion')):
+                return None
+        return pr
+
+    def android_stack_changed(self, pr):
+        if self.repo != 'fin-assist/android':
+            return False
+        files = self.pages(f"pulls/{pr['number']}/files")
+        for item in files:
+            if re.search(r'androidx[.:]|org\.jetbrains\.compose', item.get('patch', '')):
+                return True
+        if not any(f['filename'] == 'gradle/libs.versions.toml' for f in files):
+            return False
+        import tomllib
+        catalogs = []
+        for ref in (pr['base']['sha'], pr['head']['sha']):
+            content = self.get('contents/gradle/libs.versions.toml?ref=' + ref)
+            catalogs.append(tomllib.loads(base64.b64decode(content['content']).decode()))
+        def stack(catalog):
+            result = {}
+            for key, lib in catalog.get('libraries', {}).items():
+                module = lib.get('module', lib.get('group', '') + ':' + lib.get('name', ''))
+                if not module.startswith(('androidx.', 'org.jetbrains.compose')):
+                    continue
+                version = lib.get('version')
+                if isinstance(version, dict) and 'ref' in version:
+                    version = catalog.get('versions', {}).get(version['ref'])
+                result[key] = (module, version)
+            return result
+        return stack(catalogs[0]) != stack(catalogs[1])
+
+    def native_checks(self, base, checks, statuses, jobs):
+        rule = self.get('branches/' + urllib.parse.quote(base, safe='') + '/protection')
+        status_rule = rule.get('required_status_checks') or {}
+        requirements = status_rule.get('checks') or [{'context': c, 'app_id': None} for c in status_rule.get('contexts', [])]
+        if not requirements:
+            return None
+        result = []
+        for required in requirements:
+            name, app = required['context'], required.get('app_id')
+            # A push workflow may publish a skipped check with the same name.
+            # Required CI evidence comes from the exact pull_request run attempt.
+            matches = [c for c in jobs if c['name'] == name] if app in (None, -1, 15368) else []
+            if not matches:
+                matches = [c for c in checks if c['name'] == name
+                           and (app in (None, -1) or c.get('app', {}).get('id') == app)]
+            states = [dict(status='completed', conclusion=s['state']) for s in statuses
+                      if s['context'] == name] if app in (None, -1) else []
+            evidence = matches + states
+            if not evidence or any(c['status'] != 'completed' or c['conclusion'] not in ('success', 'failure') for c in evidence):
+                return None
+            result.extend(evidence)
+        return result
+
+    def protection(self, base, names):
+        # Refuse unprotected branches and missing checks. No admin or ruleset bypass.
+        rule = self.get('branches/' + urllib.parse.quote(base, safe='') + '/protection')
+        checks = rule.get('required_status_checks') or {}
+        return (rule.get('enforce_admins', {}).get('enabled') is True
+                and checks.get('strict') is True and set(names) <= set(checks.get('contexts', [])))
+
+
+def reconcile(api, config, trigger=None):
+    from renovate_retry import decide
+    base = api.base()
+    policy, policy_sha = api.read_policy()
+    if policy.get('baseBranchPatterns') != [base]:
+        policy['baseBranchPatterns'] = [base]
+        api.write_policy(policy, policy_sha)
+        policy, policy_sha = api.read_policy()
+    for candidate in api.pages('pulls?state=open'):
+        if candidate.get('user', {}).get('id') != BOT_ID:
+            continue
+        number = candidate['number']
+        pr = api.get(f'pulls/{number}')
+        commits = api.signed_commits(number)
+        if not trusted(pr, commits, api.repo) or pr['base']['ref'] != base:
+            continue
+        sha = pr['head']['sha']
+        try:
+            items = updates(pr.get('body'))
+        except (ValueError, TypeError):
+            print(f'PR {number}: invalid metadata; owner review required')
+            continue
+        # Older PRs without structured metadata remain for the owner; never guess.
+        if not items:
+            continue
+        run = api.current_run(pr)
+        if trigger and (not run or any(trigger.get(k) != run.get(k) for k in ('id', 'run_attempt', 'head_sha'))):
+            continue
+        if not run or not api.protection(base, config['requiredChecks']):
+            continue
+        jobs = api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs')
+        required = terminal_checks(jobs, config.get('ciChecks', config['requiredChecks']))
+        if not required:
+            continue
+        all_checks = api.pages(f'commits/{sha}/check-runs', 'check_runs')
+        all_statuses = api.get(f'commits/{sha}/status')
+        native = api.native_checks(base, all_checks, all_statuses['statuses'], jobs)
+        if not native:
+            continue
+        comments = api.pages(f'issues/{number}/comments')
+        records = [c for c in comments if c['user']['login'] == config['controllerLogin'] and c['body'].startswith(MARKER)]
+        state = json.loads(records[-1]['body'].split(MARKER, 1)[1].split(' -->', 1)[0]) if records else None
+        if run['status'] == 'completed' and run['conclusion'] == 'success' and all(j['conclusion'] == 'success' for j in required):
+            if compose_update(items) or api.android_stack_changed(pr):
+                continue
+            # All check runs/statuses (not just the configured jobs) must be green.
+            if any(c['conclusion'] != 'success' for c in native):
+                continue
+            current = api.fresh(number, sha, base, run)
+            if current and current.get('mergeable') is True and current.get('mergeable_state') == 'clean':
+                api.request('PUT', f'pulls/{number}/merge', {'sha': sha, 'merge_method': 'squash'})
+            continue
+        event = {'id': run['id'], 'attempt': run['run_attempt'], 'sha': sha}
+        snapshot = {'pr_open': True, 'author': BOT, 'branch': pr['head']['ref'],
+                    'commit_authors': [BOT] * len(commits), 'head_sha': sha,
+                    'base_ref': base, 'expected_base_ref': base, 'event': event,
+                    'current_run': dict(event, status=run['status'], conclusion=run['conclusion']),
+                    'checks_complete': True, 'checks': required + native}
+        decision = decide(snapshot, state)
+        if decision['action'] == 'retry' and api.fresh(number, sha, base, run):
+            # Claim before calling rerun: event redelivery never spends a second retry.
+            body = MARKER + json.dumps(decision['state']) + ' -->\nОдин автоматический повтор упавших проверок CI для SHA `' + sha + '`.'
+            claim = api.request('POST', f'issues/{number}/comments', {'body': body})
+            try:
+                api.request('POST', f"actions/runs/{run['id']}/rerun-failed-jobs")
+            except (urllib.error.HTTPError, urllib.error.URLError):
+                api.request('PATCH', f"issues/comments/{claim['id']}", {'body': body + '\nЗапрос повтора завершился ошибкой API; claim сохранён, чтобы не запускать дубликаты. Владелец: проверьте Actions run и при необходимости вручную выберите Re-run failed jobs. Следующая завершённая попытка будет оценена автоматически.'})
+                raise
+        elif decision['action'] == 'close' and api.fresh(number, sha, base, run):
+            new_rules = quarantine_rules(items, number)
+            policy, policy_sha = api.read_policy()
+            rules = policy.setdefault('packageRules', [])
+            for rule in new_rules:
+                rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue')) != (rule['matchPackageNames'],rule['matchDatasources'],rule['matchNewValue'])]
+                rules.append(rule)
+            # Persist version-scoped approval BEFORE closing, including major/groups.
+            api.write_policy(policy, policy_sha)
+            current = api.fresh(number, sha, base, run)
+            if not current:
+                continue
+            failed = '\n'.join('- [' + j['name'] + '](' + j['html_url'] + ')' for j in required if j['conclusion'] == 'failure')
+            body = (MARKER + json.dumps(dict(state, closed=True)) + ' -->\n'
+                    + 'CI повторно упал на SHA `' + sha + '`, попытка ' + str(run['run_attempt']) + '.\n' + failed
+                    + '\nPR закрыт; ветка сохранена. Повтор: отметьте обновление в Closed/Ignored или Pending Approval в Dependency Dashboard. '
+                    + 'Новые значения версий (включая исправления безопасности) не блокируются этим ограничением; '
+                    + 'та же версия или группа требует явного подтверждения. См. docs/renovate-policy.md.')
+            # Update the claim instead of adding another explanation on redelivery.
+            api.request('PATCH', f"issues/comments/{records[-1]['id']}", {'body': body})
+            if api.fresh(number, sha, base, run):
+                api.request('PATCH', f'pulls/{number}', {'state': 'closed'})
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--bootstrap', action='store_true', help='Publish the initial preset branch; does not enable automation')
+    args = parser.parse_args()
+    if args.bootstrap:
+        token = os.environ.get('RENOVATE_POLICY_TOKEN')
+        if not token:
+            raise ValueError('RENOVATE_POLICY_TOKEN is required')
+        GitHub(token, os.environ['GITHUB_REPOSITORY']).bootstrap()
+        return
+    if os.environ.get('RENOVATE_POLICY_ENABLED') != 'true':
+        print('Renovate controller disabled; no mutations')
+        return
+    token = os.environ.get('RENOVATE_POLICY_TOKEN')
+    if not token:
+        raise ValueError('RENOVATE_POLICY_TOKEN is required; GITHUB_TOKEN is not a merge credential')
+    config = json.loads(Path('.github/renovate-policy.json').read_text())
+    event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+    trigger = event.get('workflow_run') if os.environ.get('GITHUB_EVENT_NAME') == 'workflow_run' else None
+    reconcile(GitHub(token, os.environ['GITHUB_REPOSITORY'], os.environ.get('GITHUB_READ_TOKEN')), config, trigger)
+
+
+if __name__ == '__main__':
+    main()
