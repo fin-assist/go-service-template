@@ -227,3 +227,33 @@ class ProtectedReceiptAdapterTests(unittest.TestCase):
         self.assertEqual(api.read_receipts(),(receipt,'next'))
         for invalid in ([],{'1:abc':{}},{'1:abc':{'state':{'sha':'other','runs':{}}}}):
             with self.assertRaises(ValueError):validate_receipts(invalid)
+
+class RulesetProtectionTests(unittest.TestCase):
+    def test_active_or_unknown_inherited_rulesets_fail_closed(self):
+        api=GitHub('token','owner/repo');api.controller_login='controller'
+        api.get=lambda path:{'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
+        paths=[]
+        def pages(path):paths.append(path);return api.rules
+        api.pages=pages
+        for rules in ([{'enforcement':'active'}],[{'enforcement':'unknown'}],[{}]):
+            api.rules=rules;self.assertFalse(api.protection('main',['go']))
+        self.assertEqual(set(paths),{'rulesets?includes_parents=true'})
+    def test_absent_disabled_or_evaluate_rulesets_preserve_classic_requirements(self):
+        api=GitHub('token','owner/repo');api.controller_login='controller'
+        api.get=lambda path:{'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]}}
+        for rules in ([],[{'enforcement':'disabled'}],[{'enforcement':'evaluate'}]):
+            api.pages=lambda path:rules
+            self.assertTrue(api.protection('main',['go']))
+
+class TargetOwnerProtectionTests(unittest.TestCase):
+    def test_only_owner_can_write_target_and_create_release(self):
+        import copy
+        api=GitHub('token','owner/repo');api.controller_login='controller';api.pages=lambda path:[]
+        rule={'enforce_admins':{'enabled':True},'required_status_checks':{'strict':True,'contexts':['go']},'restrictions':{'users':[{'login':'controller'}],'teams':[],'apps':[]},'block_creations':{'enabled':True}}
+        api.get=lambda path:api.rule
+        api.rule=copy.deepcopy(rule)
+        self.assertTrue(api.protection('main',['go']));self.assertTrue(api.protection('release/1.0.0',['go']))
+        for mutate in (lambda r:r.update(restrictions=None),lambda r:r['restrictions']['users'].append({'login':'writer'}),lambda r:r['restrictions']['apps'].append({'slug':'app'}),lambda r:r['restrictions']['teams'].append({'slug':'team'})):
+            api.rule=copy.deepcopy(rule);mutate(api.rule);self.assertFalse(api.protection('main',['go']))
+        api.rule=copy.deepcopy(rule);api.rule['block_creations']['enabled']=False
+        self.assertTrue(api.protection('main',['go']));self.assertFalse(api.protection('release/1.0.0',['go']))

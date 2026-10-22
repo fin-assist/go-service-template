@@ -182,6 +182,7 @@ def terminal_checks(jobs, names):
 class GitHub:
     def __init__(self, token, repo, read_token=None):
         self.token, self.repo, self.read_token = token, repo, read_token
+        self.controller_login = None
 
     def request(self, method, path, data=None):
         url = 'https://api.github.com' + path if path.startswith('/') else 'https://api.github.com/repos/' + self.repo + '/' + path
@@ -426,8 +427,19 @@ class GitHub:
         # Refuse unprotected branches and missing checks. No admin or ruleset bypass.
         rule = self.get('branches/' + urllib.parse.quote(base, safe='') + '/protection')
         checks = rule.get('required_status_checks') or {}
-        return (rule.get('enforce_admins', {}).get('enabled') is True
-                and checks.get('strict') is True and set(names) <= set(checks.get('contexts', [])))
+        classic = (rule.get('enforce_admins', {}).get('enabled') is True
+                   and checks.get('strict') is True and set(names) <= set(checks.get('contexts', [])))
+        restrictions = rule.get('restrictions') or {}
+        owned = (self.controller_login is not None
+                 and [user.get('login') for user in restrictions.get('users', [])] == [self.controller_login]
+                 and restrictions.get('teams') == [] and restrictions.get('apps') == []
+                 and (not base.startswith('release/') or rule.get('block_creations', {}).get('enabled') is True))
+        if not classic or not owned:
+            return False
+        # Until explicitly supported, active inherited/repository rulesets may
+        # grant our owner actor bypass of additional requirements. Fail closed.
+        return all(rule.get('enforcement') in ('disabled', 'evaluate')
+                   for rule in self.pages('rulesets?includes_parents=true'))
 
 
 def retry_decision(runs, state, sha):
@@ -487,6 +499,7 @@ def validate_receipts(data):
 def reconcile(api, config, trigger=None, mutate_prs=True):
     if api.identity() != config['controllerLogin']:
         raise ValueError('Mutation credential identity differs from controllerLogin; no retry claim is allowed')
+    api.controller_login = config['controllerLogin']
     if not api.policy_protected(config['controllerLogin']):
         raise ValueError('Generated preset branch must restrict pushes to the controller identity, with admins enforced and force/delete disabled')
     base = api.base()
@@ -635,7 +648,12 @@ def reconcile_pr(api, config, base, candidate, trigger):
         if any(comment.get('id') == comment_id for comment in comments):
             api.request('PATCH', f'issues/comments/{comment_id}', {'body': body})
         else:
-            api.request('POST', f'issues/{number}/comments', {'body': body})
+            replacement = api.request('POST', f'issues/{number}/comments', {'body': body})
+            latest, latest_sha = api.read_receipts()
+            if latest.get(receipt_key, {}).get('state') != state:
+                raise ValueError('Protected retry receipt changed during comment replacement')
+            latest[receipt_key]['comment_id'] = replacement['id']
+            api.write_receipts(latest, latest_sha)
         if api.fresh(number, sha, base, runs):
             api.request('PATCH', f'pulls/{number}', {'state': 'closed'})
 

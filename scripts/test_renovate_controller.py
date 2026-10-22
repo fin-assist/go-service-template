@@ -553,3 +553,31 @@ class ProtectedReceiptTests(unittest.TestCase):
         api.pr['head']['sha']='abc';api.run['head_sha']='abc';reconcile(api,api.config)
         self.assertEqual(sum(path.endswith('rerun-failed-jobs') for path,_ in api.actions),2)
         self.assertEqual(set(api.receipts),{'1:abc','1:def'})
+
+class ReplacementCommentTests(unittest.TestCase):
+    def test_deleted_claim_close_error_then_redelivery_reuses_replacement(self):
+        import urllib.error
+        class ReplacementFake(Fake):
+            def __init__(self):super().__init__();self.sequence=20;self.fail_close=True
+            def request(self,method,path,data=None):
+                if path=='issues/1/comments':
+                    self.actions.append((path,data));ident=self.sequence;self.sequence+=1
+                    self.comments.append({'id':ident,'user':{'login':'controller'},'body':data['body']})
+                    return {'id':ident,'user':{'login':'controller'}}
+                if path.startswith('issues/comments/'):
+                    self.actions.append((path,data))
+                    next(c for c in self.comments if c['id']==int(path.rsplit('/',1)[1]))['body']=data['body']
+                    return {}
+                if path=='pulls/1' and self.fail_close:
+                    self.fail_close=False
+                    raise urllib.error.HTTPError('https://api.github.com/fixture',503,'fixture',{},None)
+                return super().request(method,path,data)
+        api=ReplacementFake();api.run.update(conclusion='failure',run_attempt=2);api.jobs[0]['conclusion']='failure'
+        state={'sha':'abc','runs':{'ci.yml':{'run_id':1,'attempt':1,'retried':True}}}
+        api.receipts={'1:abc':{'state':state,'comment_id':10}}
+        with self.assertRaises(ValueError):reconcile(api,api.config)
+        self.assertEqual(api.receipts['1:abc']['comment_id'],20)
+        reconcile(api,api.config)
+        self.assertEqual(api.pr['state'],'closed')
+        self.assertEqual([c['id'] for c in api.comments],[20])
+        self.assertTrue(any(path=='issues/comments/20' for path,_ in api.actions))
