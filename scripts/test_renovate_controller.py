@@ -46,7 +46,7 @@ class Fake(GitHub):
         if path.endswith('/check-runs'):return copy.deepcopy(self.checks)
         raise AssertionError(path)
     def get(self,path):
-        if path=='pulls/1':return copy.deepcopy(self.pr)
+        if path==f"pulls/{self.pr['number']}":return copy.deepcopy(self.pr)
         if path.endswith('/status'):return {'total_count':0,'state':'pending','statuses':[]}
         raise AssertionError(path)
     def fresh(self,*args,**kwargs):
@@ -54,9 +54,9 @@ class Fake(GitHub):
         return super().fresh(*args,**kwargs)
     def request(self,method,path,data=None):
         self.actions.append((path,data))
-        if path=='issues/1/comments':self.comments.append({'id':10,'user':{'login':'controller'},'body':data['body']})
+        if path==f"issues/{self.pr['number']}/comments":self.comments.append({'id':10,'user':{'login':'controller'},'body':data['body']})
         if path=='issues/comments/10':self.comments[0]['body']=data['body']
-        if path=='pulls/1':self.pr['state']=data['state']
+        if path==f"pulls/{self.pr['number']}":self.pr['state']=data['state']
         return {'id':10,'user':{'login':'controller'}}
 
 class ControllerTests(unittest.TestCase):
@@ -83,9 +83,13 @@ class ControllerTests(unittest.TestCase):
         self.assertLess(next(i for i,x in enumerate(api.actions) if x[0]=='policy'), next(i for i,x in enumerate(api.actions) if x[0]=='pulls/1'))
         reconcile(api,api.config);self.assertEqual(len(api.comments),1)
     def test_successful_retry_merges(self):
-        api=Fake();api.comments=[{'id':10,'user':{'login':'controller'},'body':MARKER+json.dumps({'sha':'abc','run_id':1,'attempt':1})+' -->'}]
-        api.run['run_attempt']=2;reconcile(api,api.config)
-        self.assertTrue(any(p=='pulls/1/merge' for p,_ in api.actions))
+        api=Fake();api.run['conclusion']='failure';api.jobs[0]['conclusion']='failure'
+        reconcile(api,api.config)
+        self.assertFalse(any(path=='pulls/1/merge' for path,_ in api.actions))
+        api.run.update(run_attempt=2,conclusion='success');api.jobs[0]['conclusion']='success'
+        reconcile(api,api.config)
+        self.assertTrue(any(path=='pulls/1/merge' for path,_ in api.actions))
+        self.assertEqual(sum(path.endswith('rerun-failed-jobs') for path,_ in api.actions),1)
     def test_stale_event_or_pending_or_human_or_missing_or_unprotected_waits(self):
         for update in (lambda a:a.run.update(status='in_progress'),lambda a:(a.commits.append({'author':{'id':1}}),a.pr.update(commits=2)),lambda a:a.jobs.clear()):
             api=Fake();update(api);reconcile(api,api.config);self.assertEqual(api.actions,[])
@@ -581,3 +585,41 @@ class ReplacementCommentTests(unittest.TestCase):
         self.assertEqual(api.pr['state'],'closed')
         self.assertEqual([c['id'] for c in api.comments],[20])
         self.assertTrue(any(path=='issues/comments/20' for path,_ in api.actions))
+
+class SuccessiveQuarantineTests(unittest.TestCase):
+    def test_two_real_reconciliations_replace_exact_value_generation_and_preserve_order(self):
+        policy={'baseBranchPatterns':['main']}
+        for number in (1,2):
+            api=Fake();api.pr['number']=number;api.policy=policy
+            api.run['conclusion']='failure';api.jobs[0]['conclusion']='failure'
+            reconcile(api,api.config);api.run['run_attempt']=2;reconcile(api,api.config)
+            self.assertEqual(api.pr['state'],'closed');policy=api.policy
+        rules=policy['packageRules']
+        self.assertEqual(len(rules),2)
+        self.assertEqual(rules[0]['recreateWhen'],'always')
+        self.assertEqual(rules[1]['recreateWhen'],'never')
+        self.assertEqual(rules[1]['additionalBranchPrefix'],'fin211-retry-2-')
+
+class ReplacementAcknowledgementTests(unittest.TestCase):
+    def test_accepted_replacement_with_failed_receipt_ack_is_reused(self):
+        class AckFake(Fake):
+            def __init__(self):super().__init__();self.sequence=20;self.fail_ack=True
+            def request(self,method,path,data=None):
+                if path=='issues/1/comments':
+                    ident=self.sequence;self.sequence+=1
+                    self.comments.append({'id':ident,'user':{'login':'controller'},'body':data['body']})
+                    self.actions.append((path,data));return {'id':ident,'user':{'login':'controller'}}
+                if path.startswith('issues/comments/'):
+                    next(c for c in self.comments if c['id']==int(path.rsplit('/',1)[1]))['body']=data['body'];return {}
+                return super().request(method,path,data)
+            def write_receipts(self,data,sha):
+                if self.fail_ack:self.fail_ack=False;raise ValueError('CAS acknowledgement lost')
+                return super().write_receipts(data,sha)
+        api=AckFake();api.run.update(conclusion='failure',run_attempt=2);api.jobs[0]['conclusion']='failure'
+        state={'sha':'abc','runs':{'ci.yml':{'run_id':1,'attempt':1,'retried':True}}}
+        api.receipts={'1:abc':{'state':state,'comment_id':10}}
+        with self.assertRaises(ValueError):reconcile(api,api.config)
+        reconcile(api,api.config)
+        self.assertEqual([c['id'] for c in api.comments],[20])
+        self.assertEqual(api.receipts['1:abc']['comment_id'],20)
+        self.assertEqual(api.pr['state'],'closed')

@@ -648,7 +648,13 @@ def reconcile_pr(api, config, base, candidate, trigger):
         if any(comment.get('id') == comment_id for comment in comments):
             api.request('PATCH', f'issues/comments/{comment_id}', {'body': body})
         else:
-            replacement = api.request('POST', f'issues/{number}/comments', {'body': body})
+            # Recover an accepted POST whose response/CAS acknowledgement was lost.
+            # This is UX deduplication only; the protected receipt authorized close.
+            replacement = next((comment for comment in comments
+                                if (comment.get('user') or {}).get('login') == config['controllerLogin']
+                                and comment.get('body') == body), None)
+            if replacement is None:
+                replacement = api.request('POST', f'issues/{number}/comments', {'body': body})
             latest, latest_sha = api.read_receipts()
             if latest.get(receipt_key, {}).get('state') != state:
                 raise ValueError('Protected retry receipt changed during comment replacement')
