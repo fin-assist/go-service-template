@@ -139,5 +139,5 @@ class RecoveryFamilyTests(unittest.TestCase):
         rule=recovery_rules([{'depName':'x','datasource':'npm','newValue':'^4.0.0'}],42)[0]
         self.assertEqual(rule['matchPackageNames'],['x'])
         self.assertEqual(rule['matchJsonata'],['newMajor = 4'])
-        self.assertEqual(rule['additionalBranchPrefix'],'fin211-recovery-42-')
-        self.assertNotIn('recreateWhen',rule)
+        self.assertEqual(rule['recreateWhen'],'always')
+        self.assertNotIn('additionalBranchPrefix',rule)

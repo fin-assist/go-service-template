@@ -86,14 +86,14 @@ def quarantine_rules(items, generation):
 
 
 def recovery_rules(items, generation):
-    """Rotate cache identities only for an automatically failed dependency family."""
+    """Recover future fixes only in an automatically failed dependency family."""
     rules = []
     for item in items:
         rule = {
             'description': 'FIN-211: recovery of an automatically failed dependency family',
             'matchPackageNames': [item['depName']],
             'matchDatasources': [item['datasource']],
-            'additionalBranchPrefix': f'fin211-recovery-{generation}-',
+            'recreateWhen': 'always',
         }
         major = item.get('newMajor')
         if type(major) is not int:
@@ -464,7 +464,7 @@ def reconcile(api, config, trigger=None):
             for rule in recovery + new_rules:
                 rules[:] = [old for old in rules if (old.get('matchPackageNames'),old.get('matchDatasources'),old.get('matchNewValue'),old.get('matchJsonata')) != (rule['matchPackageNames'],rule['matchDatasources'],rule.get('matchNewValue'),rule.get('matchJsonata'))]
                 rules.append(rule)
-            # Exact failed values override family recovery prefixes.
+            # Exact failed values override family recreation.
             rules.sort(key=lambda rule: rule.get('description') != 'FIN-211: recovery of an automatically failed dependency family')
             # Persist version-scoped approval BEFORE closing, including major/groups.
             api.write_policy(policy, policy_sha)
@@ -474,7 +474,7 @@ def reconcile(api, config, trigger=None):
             failed = '\n'.join('- [' + j['name'] + '](' + j['html_url'] + ')' for j in required if j['conclusion'] == 'failure')
             body = (MARKER + json.dumps(dict(state, closed=True)) + ' -->\n'
                     + 'CI повторно упал на SHA `' + sha + '`. Попытки: ' + ', '.join(name + '=' + str(value['run_attempt']) for name, value in runs.items()) + '.\n' + failed
-                    + '\nPR закрыт; ветка сохранена. Повтор: отметьте обновление в Closed/Ignored или Pending Approval в Dependency Dashboard. '
+                    + '\nПовторное падение подтверждено; запрошено автоматическое закрытие. Контроллер ветку не удаляет. Повтор: отметьте обновление в Closed/Ignored или Pending Approval в Dependency Dashboard. '
                     + 'Новые значения версий (включая исправления безопасности) не блокируются этим ограничением; '
                     + 'та же версия или группа требует явного подтверждения. См. docs/renovate-policy.md.')
             # Update the claim instead of adding another explanation on redelivery.

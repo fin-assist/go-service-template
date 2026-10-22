@@ -95,6 +95,20 @@ class ControllerTests(unittest.TestCase):
         reconcile(api,api.config)
         self.assertEqual(len(api.comments),1)
 
+    def test_close_api_error_does_not_claim_pr_was_closed(self):
+        import urllib.error
+        api=Fake();api.run.update(conclusion='failure',run_attempt=2);api.jobs[0]['conclusion']='failure'
+        state={'sha':'abc','runs':{'ci.yml':{'run_id':1,'attempt':1,'retried':True}}}
+        api.comments=[{'id':10,'user':{'login':'controller'},'body':MARKER+json.dumps(state)+' -->'}]
+        original=api.request
+        def request(method,path,data=None):
+            if path=='pulls/1' and method=='PATCH':raise urllib.error.URLError('test outage')
+            return original(method,path,data)
+        api.request=request
+        with self.assertRaises(urllib.error.URLError):reconcile(api,api.config)
+        self.assertEqual(api.pr['state'],'open')
+        self.assertNotIn('PR закрыт',api.comments[0]['body'])
+
     def test_current_target_is_persisted_once(self):
         api=Fake();api.target='release/0.3.0';reconcile(api,api.config)
         self.assertEqual(api.policy['baseBranchPatterns'],['release/0.3.0'])
