@@ -1,7 +1,7 @@
 name: Renovate policy controller
 on:
   workflow_run:
-    workflows: [CI, ci]
+    workflows: [CI, ci, Renovate policy tests]
     types: [completed]
   create:
   delete:

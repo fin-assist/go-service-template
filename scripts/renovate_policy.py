@@ -192,21 +192,50 @@ class GitHub:
             commit['_trusted_signer'] = signature.get('isValid') is True and signer == committer and signer in ('web-flow', BOT)
         return commits
 
-    def current_run(self, pr):
-        runs = self.pages('actions/workflows/ci.yml/runs?event=pull_request&head_sha=' + pr['head']['sha'], 'workflow_runs')
+    def current_run(self, pr, workflow='ci.yml'):
+        runs = self.pages('actions/workflows/' + urllib.parse.quote(workflow, safe='') + '/runs?event=pull_request&head_sha=' + pr['head']['sha'], 'workflow_runs')
         # A run from another PR, base, or stale head must never count.
         runs = [r for r in runs if r['head_sha'] == pr['head']['sha'] and
                 any(p['number'] == pr['number'] and p['base']['ref'] == pr['base']['ref'] for p in r['pull_requests'])]
         return max(runs, key=lambda r: r['id']) if runs else None
 
-    def fresh(self, number, sha, base, run=None):
+    def current_runs(self, pr, workflows):
+        return {workflow: self.current_run(pr, workflow) for workflow in workflows}
+
+    def workflow_jobs(self, run, names):
+        """Keep the latest execution of each job; earlier attempts may supply successes only."""
+        selected = {}
+        attempt = run['run_attempt']
+        if type(attempt) is not int or not 1 <= attempt <= 50:
+            return []
+        for number in range(attempt, 0, -1):
+            jobs = self.pages(f"actions/runs/{run['id']}/attempts/{number}/jobs", 'jobs')
+            seen = set()
+            for job in jobs:
+                name = job['name']
+                if (name in seen or job.get('run_id', run['id']) != run['id']
+                        or job.get('head_sha', run['head_sha']) != run['head_sha']):
+                    return []
+                seen.add(name)
+                if name not in selected:
+                    # Never reuse an old failure as evidence of a failed retry.
+                    if number != attempt and job.get('conclusion') != 'success':
+                        return []
+                    selected[name] = dict(job, _run_id=run['id'], _run_attempt=number)
+            if set(names) <= selected.keys():
+                return list(selected.values())
+        return []
+
+    def fresh(self, number, sha, base, runs=None):
         pr = self.get(f'pulls/{number}')
         commits = self.signed_commits(number)
         if not trusted(pr, commits, self.repo) or pr['head']['sha'] != sha or pr['base']['ref'] != base or self.base() != base:
             return None
-        if run:
-            current = self.current_run(pr)
-            if not current or any(current.get(k) != run.get(k) for k in ('id', 'run_attempt', 'head_sha', 'status', 'conclusion')):
+        if runs:
+            current = self.current_runs(pr, runs)
+            if any(not current.get(name) or any(current[name].get(k) != run.get(k)
+                   for k in ('id', 'run_attempt', 'head_sha', 'status', 'conclusion'))
+                   for name, run in runs.items()):
                 return None
         return pr
 
@@ -268,8 +297,39 @@ class GitHub:
                 and checks.get('strict') is True and set(names) <= set(checks.get('contexts', [])))
 
 
+def retry_decision(runs, state, sha):
+    """Claim once per head; only the exact retry of every failed run proves closure."""
+    if any(run.get('status') != 'completed' or run.get('conclusion') not in ('success', 'failure')
+           for run in runs.values()):
+        return {'action': 'wait'}
+    failed = {name: run for name, run in runs.items() if run['conclusion'] == 'failure'}
+    if not failed:
+        return {'action': 'wait'}
+    if state is not None:
+        if not isinstance(state, dict) or not isinstance(state.get('sha'), str):
+            return {'action': 'wait'}
+        if state['sha'] == sha:
+            claimed = state.get('runs')
+            if not isinstance(claimed, dict) or claimed.keys() != runs.keys():
+                return {'action': 'wait'}
+            for name, run in runs.items():
+                claim = claimed[name]
+                if (not isinstance(claim, dict) or type(claim.get('attempt')) is not int
+                        or type(claim.get('run_id')) is not int
+                        or type(claim.get('retried')) is not bool
+                        or claim['attempt'] < 1 or claim['run_id'] != run['id']
+                        or run['run_attempt'] != claim['attempt'] + int(claim['retried'])):
+                    return {'action': 'wait'}
+            # A failure of an un-retried workflow is not evidence of our retry.
+            if any(not claimed[name]['retried'] for name in failed):
+                return {'action': 'wait'}
+            return {'action': 'close'}
+    return {'action': 'retry', 'state': {'sha': sha, 'runs': {
+        name: {'run_id': run['id'], 'attempt': run['run_attempt'], 'retried': name in failed}
+        for name, run in runs.items()}}}
+
+
 def reconcile(api, config, trigger=None):
-    from renovate_retry import decide
     base = api.base()
     policy, policy_sha = api.read_policy()
     if policy.get('baseBranchPatterns') != [base]:
@@ -293,14 +353,30 @@ def reconcile(api, config, trigger=None):
         # Older PRs without structured metadata remain for the owner; never guess.
         if not items:
             continue
-        run = api.current_run(pr)
-        if trigger and (not run or any(trigger.get(k) != run.get(k) for k in ('id', 'run_attempt', 'head_sha'))):
+        workflow_checks = {'ci.yml': config.get('ciChecks', [name for name in config['requiredChecks']
+                                                                if name != 'Renovate policy tests'])}
+        if 'Renovate policy tests' in config['requiredChecks']:
+            workflow_checks['renovate-policy-tests.yml'] = ['Renovate policy tests']
+        runs = api.current_runs(pr, workflow_checks)
+        if any(not run for run in runs.values()):
             continue
-        if not run or not api.protection(base, config['requiredChecks']):
+        if trigger and not any(all(trigger.get(k) == run.get(k)
+                                   for k in ('id', 'run_attempt', 'head_sha')) for run in runs.values()):
             continue
-        jobs = api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs')
-        required = terminal_checks(jobs, config.get('ciChecks', config['requiredChecks']))
-        if not required:
+        if not api.protection(base, config['requiredChecks']):
+            continue
+        jobs, required = [], []
+        complete = True
+        for workflow, run in runs.items():
+            current_jobs = api.workflow_jobs(run, workflow_checks[workflow])
+            current_required = terminal_checks(current_jobs, workflow_checks[workflow])
+            if (run['head_sha'] != sha or run['status'] != 'completed'
+                    or run['conclusion'] not in ('success', 'failure') or not current_required):
+                complete = False
+                break
+            jobs.extend(current_jobs)
+            required.extend(current_required)
+        if not complete:
             continue
         all_checks = api.pages(f'commits/{sha}/check-runs', 'check_runs')
         all_statuses = api.get(f'commits/{sha}/status')
@@ -310,33 +386,36 @@ def reconcile(api, config, trigger=None):
         comments = api.pages(f'issues/{number}/comments')
         records = [c for c in comments if c['user']['login'] == config['controllerLogin'] and c['body'].startswith(MARKER)]
         state = json.loads(records[-1]['body'].split(MARKER, 1)[1].split(' -->', 1)[0]) if records else None
-        if run['status'] == 'completed' and run['conclusion'] == 'success' and all(j['conclusion'] == 'success' for j in required):
+        if all(run['conclusion'] == 'success' for run in runs.values()) and all(j['conclusion'] == 'success' for j in required):
             if compose_update(items) or api.android_stack_changed(pr):
                 continue
             # All check runs/statuses (not just the configured jobs) must be green.
             if any(c['conclusion'] != 'success' for c in native):
                 continue
-            current = api.fresh(number, sha, base, run)
+            current = api.fresh(number, sha, base, runs)
             if current and current.get('mergeable') is True and current.get('mergeable_state') == 'clean':
                 api.request('PUT', f'pulls/{number}/merge', {'sha': sha, 'merge_method': 'squash'})
             continue
-        event = {'id': run['id'], 'attempt': run['run_attempt'], 'sha': sha}
-        snapshot = {'pr_open': True, 'author': BOT, 'branch': pr['head']['ref'],
-                    'commit_authors': [BOT] * len(commits), 'head_sha': sha,
-                    'base_ref': base, 'expected_base_ref': base, 'event': event,
-                    'current_run': dict(event, status=run['status'], conclusion=run['conclusion']),
-                    'checks_complete': True, 'checks': required + native}
-        decision = decide(snapshot, state)
-        if decision['action'] == 'retry' and api.fresh(number, sha, base, run):
+        decision = retry_decision(runs, state, sha)
+        if decision['action'] == 'retry' and api.fresh(number, sha, base, runs):
             # Claim before calling rerun: event redelivery never spends a second retry.
             body = MARKER + json.dumps(decision['state']) + ' -->\nОдин автоматический повтор упавших проверок CI для SHA `' + sha + '`.'
             claim = api.request('POST', f'issues/{number}/comments', {'body': body})
             try:
-                api.request('POST', f"actions/runs/{run['id']}/rerun-failed-jobs")
+                dispatched = set()
+                for workflow, run in runs.items():
+                    if run['conclusion'] == 'failure':
+                        # Already dispatched runs may now be queued/in progress.
+                        # Every remaining run must still match the claimed snapshot.
+                        remaining = {name: value for name, value in runs.items() if name not in dispatched}
+                        if not api.fresh(number, sha, base, remaining):
+                            break
+                        api.request('POST', f"actions/runs/{run['id']}/rerun-failed-jobs")
+                        dispatched.add(workflow)
             except (urllib.error.HTTPError, urllib.error.URLError):
                 api.request('PATCH', f"issues/comments/{claim['id']}", {'body': body + '\nЗапрос повтора завершился ошибкой API; claim сохранён, чтобы не запускать дубликаты. Владелец: проверьте Actions run и при необходимости вручную выберите Re-run failed jobs. Следующая завершённая попытка будет оценена автоматически.'})
                 raise
-        elif decision['action'] == 'close' and api.fresh(number, sha, base, run):
+        elif decision['action'] == 'close' and api.fresh(number, sha, base, runs):
             new_rules = quarantine_rules(items, number)
             policy, policy_sha = api.read_policy()
             rules = policy.setdefault('packageRules', [])
@@ -345,18 +424,18 @@ def reconcile(api, config, trigger=None):
                 rules.append(rule)
             # Persist version-scoped approval BEFORE closing, including major/groups.
             api.write_policy(policy, policy_sha)
-            current = api.fresh(number, sha, base, run)
+            current = api.fresh(number, sha, base, runs)
             if not current:
                 continue
             failed = '\n'.join('- [' + j['name'] + '](' + j['html_url'] + ')' for j in required if j['conclusion'] == 'failure')
             body = (MARKER + json.dumps(dict(state, closed=True)) + ' -->\n'
-                    + 'CI повторно упал на SHA `' + sha + '`, попытка ' + str(run['run_attempt']) + '.\n' + failed
+                    + 'CI повторно упал на SHA `' + sha + '`. Попытки: ' + ', '.join(name + '=' + str(value['run_attempt']) for name, value in runs.items()) + '.\n' + failed
                     + '\nPR закрыт; ветка сохранена. Повтор: отметьте обновление в Closed/Ignored или Pending Approval в Dependency Dashboard. '
                     + 'Новые значения версий (включая исправления безопасности) не блокируются этим ограничением; '
                     + 'та же версия или группа требует явного подтверждения. См. docs/renovate-policy.md.')
             # Update the claim instead of adding another explanation on redelivery.
             api.request('PATCH', f"issues/comments/{records[-1]['id']}", {'body': body})
-            if api.fresh(number, sha, base, run):
+            if api.fresh(number, sha, base, runs):
                 api.request('PATCH', f'pulls/{number}', {'state': 'closed'})
 
 
