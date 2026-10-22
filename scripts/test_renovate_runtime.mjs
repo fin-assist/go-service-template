@@ -108,7 +108,7 @@ async function explicitApproval(branch, cfg) {
 }
 const passed = 'passed-approval-boundary';
 
-// Each automatic close rotates recovery only for its affected version family.
+// Only an automatically failed dependency family may recreate its closed PR cache key.
 const failedItem = update('a','4.0.0');
 const [original] = await branches(config([], {grouped:false}),[dependency('a','4.0.0')]);
 ignore(original);
@@ -117,14 +117,16 @@ const [firstRetry] = await branches(firstConfig,[dependency('a','4.0.0')]);
 assert.equal((await gate(firstRetry)).result,'needs-approval');
 assert.equal((await explicitApproval(firstRetry,firstConfig)).result,passed);
 const [firstFix] = await branches(firstConfig,[dependency('a','4.0.1')]);
-assert.ok(firstFix.branchName.includes('fin211-recovery-123-'));
+assert.equal(firstFix.recreateClosed,true);
+assert.equal(firstFix.branchName,original.branchName);
 assert.equal((await gate(firstFix)).result,passed);
 ignore(firstFix); // Second automatic failure occurs on the first recovery branch.
 const secondConfig = config(failureRules([update('a','4.0.1')],456),{grouped:false});
 const [secondFix] = await branches(secondConfig,[dependency('a','4.0.2')]);
-assert.ok(secondFix.branchName.includes('fin211-recovery-456-'));
+assert.equal(secondFix.recreateClosed,true);
+assert.equal(secondFix.branchName,original.branchName);
 assert.equal((await gate(secondFix)).result,passed);
-console.log('PASS: successive automatic failures keep future major fixes eligible with default auto');
+console.log('PASS: successive failures keep future major fixes eligible through scoped recreation');
 
 // Manual ignores outside this dependency/family retain their existing cache keys.
 const [unrelated] = await branches(config([],{grouped:false}),[dependency('z','4.0.1')]);
@@ -137,7 +139,7 @@ for (const dep of [dependency('z','4.0.1'),dependency('a','5.0.1')]) {
 }
 console.log('PASS: unrelated dependencies and other majors remain manually ignored');
 
-// Related group members share the new recovery generation and remain grouped.
+// Recovered updates retain the original grouping and branch identity.
 const groupItems = [update('a','4.0.0'),update('b','4.0.0')];
 const [originalGroup] = await branches(config([]),[dependency('a','4.0.0'),dependency('b','4.0.0')]);
 ignore(originalGroup);
@@ -145,7 +147,7 @@ const groupConfig = config(failureRules(groupItems));
 const futureGroup = await branches(groupConfig,[dependency('a','4.0.1'),dependency('b','4.0.2')]);
 assert.equal(futureGroup.length,1);
 assert.equal(futureGroup[0].upgrades.length,2);
-assert.ok(futureGroup[0].branchName.includes('fin211-recovery-123-'));
+assert.equal(futureGroup[0].branchName,originalGroup.branchName);
 assert.equal((await gate(futureGroup[0])).result,passed);
 console.log('PASS: future fixes of the failed group stay grouped and eligible');
 
@@ -197,3 +199,16 @@ for (const newDigest of ['sha256:bad','sha256:fixed']) {
   assert.equal(matched.dependencyDashboardApproval === true, newDigest === 'sha256:bad');
 }
 console.log('PASS: fixed digest under the same tag escapes exact failed-digest approval');
+
+// The documented exception is restricted to the recovered dependency family.
+ignore(secondFix);
+assert.equal((await gate(secondFix)).result,passed);
+console.log('PASS: same-family manual ignore may be recreated after automatic recovery');
+
+// Recovery never changes group branch keys or separates unaffected group members.
+const [withUnaffected] = await branches(config(failureRules([update('a','4.0.0')])),
+  [dependency('a','4.0.1'),dependency('c','5.0.1')]);
+assert.equal(withUnaffected.upgrades.length,2);
+assert.equal(withUnaffected.branchName,originalGroup.branchName);
+assert.equal((await gate(withUnaffected)).result,passed);
+console.log('PASS: recovered and unaffected dependencies remain in one original group');
