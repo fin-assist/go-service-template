@@ -38,12 +38,13 @@ const { setPlatformApi } = await import(mod('modules/platform/index.js'));
 const { GlobalConfig } = await import(mod('config/global.js'));
 
 let existingBranches = new Set();
-let closedBranch = null;
+const closedPrs = [];
+function ignore(branch) { closedPrs.push({ branchName:branch.branchName, prTitle:branch.prTitle }); existingBranches.add(branch.branchName); }
 let dashboardBody = '';
 let checkedBody = '';
 apis.set('github', {
   getBranchPr: async () => null,
-  findPr: async (query) => query.branchName === closedBranch ? { number: 1, state: 'closed' } : null,
+  findPr: async (query) => closedPrs.some(pr => pr.branchName === query.branchName && (!query.prTitle || pr.prTitle === query.prTitle)) ? {number:1,state:'closed'} : null,
   getPr: async () => ({ state: 'closed' }),
   ensureIssue: async ({ body }) => { dashboardBody = body; },
   findIssue: async () => ({ number: 2, body: checkedBody }),
@@ -68,26 +69,25 @@ function dependency(name, value, old = '3.0.0', type = 'major') {
     currentVersion: old, updates: [{ newValue: value, newVersion: value,
       newMajor: Number(value.split('.')[0]), updateType: type }] };
 }
-function rule(name, value, generation = 123, isolate = true) {
-  // Exercise the production rule builder, not an imitation of its policy.
+function productionRules(builder, items, generation = 123) {
+  // Exercise both production builders, never an imitation of policy logic.
   const controller = process.env.RENOVATE_POLICY_SCRIPT ?? fileURLToPath(new URL('./renovate_policy.py', import.meta.url));
-  const code = "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.quarantine_rules(json.loads(sys.argv[2]),int(sys.argv[3]))))";
-  const [result] = JSON.parse(execFileSync('python3', ['-c', code, controller,
-    JSON.stringify([{depName:name,newValue:value,datasource:'npm'}]), String(generation)],
-    { encoding:'utf8', timeout:5000 }));
-  if (!isolate) {
-    // Negative control: the earlier scoped-only proposal lacks isolation.
-    delete result.groupName;
-    delete result.additionalBranchPrefix;
-  }
-  return result;
+  const code = "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('policy',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(getattr(m,sys.argv[4])(json.loads(sys.argv[2]),int(sys.argv[3]))))";
+  return JSON.parse(execFileSync('python3', ['-c', code, controller,
+    JSON.stringify(items), String(generation), builder], {encoding:'utf8',timeout:5000}));
 }
-function config(rules, { grouped = true, always = true } = {}) {
-  return { ...getConfig(), semanticCommits: 'disabled', errors: [], warnings: [],
-    repoIsOnboarded: true, baseBranch: 'main', dependencyDashboard: true,
-    recreateWhen: always ? 'always' : 'auto', packageRules: [
-      ...(grouped ? [{ matchPackageNames: ['*'], groupName: 'weekly' }] : []), ...rules] };
+function update(name, value) {
+  return {depName:name,newValue:value,datasource:'npm',newMajor:Number(value.split('.')[0])};
 }
+function failureRules(items, generation = 123) {
+  return [...productionRules('recovery_rules',items,generation), ...productionRules('quarantine_rules',items,generation)];
+}
+function config(rules, {grouped = true} = {}) {
+  return {...getConfig(), semanticCommits:'disabled', errors:[],warnings:[],
+    repoIsOnboarded:true,baseBranch:'main',dependencyDashboard:true,recreateWhen:'auto',
+    packageRules:[...(grouped?[{matchPackageNames:['*'],groupName:'weekly'}]:[]),...rules]};
+}
+
 async function branches(cfg, deps) {
   return (await branchifyUpgrades(cfg, { npm: [{ packageFile: 'package.json', deps }] })).branches;
 }
@@ -108,65 +108,83 @@ async function explicitApproval(branch, cfg) {
 }
 const passed = 'passed-approval-boundary';
 
-// Regression proof: scoped never alone hides a new version in the same major.
-for (const always of [false, true]) {
-  const cfg = config([rule('a', '4.0.0')], { grouped: false, always });
-  const [failed] = await branches(cfg, [dependency('a', '4.0.0')]);
-  closedBranch = failed.branchName.replace('fin211-retry-123-', '');
-  existingBranches = new Set([closedBranch]);
-  assert.equal((await gate(failed)).result, 'needs-approval');
-  assert.equal((await explicitApproval(failed, cfg)).result, passed);
-  const [future] = await branches(cfg, [dependency('a', '4.0.1')]);
-  assert.equal((await gate(future)).result, always ? passed : 'already-existed');
+// Each automatic close rotates recovery only for its affected version family.
+const failedItem = update('a','4.0.0');
+const [original] = await branches(config([], {grouped:false}),[dependency('a','4.0.0')]);
+ignore(original);
+const firstConfig = config(failureRules([failedItem]), {grouped:false});
+const [firstRetry] = await branches(firstConfig,[dependency('a','4.0.0')]);
+assert.equal((await gate(firstRetry)).result,'needs-approval');
+assert.equal((await explicitApproval(firstRetry,firstConfig)).result,passed);
+const [firstFix] = await branches(firstConfig,[dependency('a','4.0.1')]);
+assert.ok(firstFix.branchName.includes('fin211-recovery-123-'));
+assert.equal((await gate(firstFix)).result,passed);
+ignore(firstFix); // Second automatic failure occurs on the first recovery branch.
+const secondConfig = config(failureRules([update('a','4.0.1')],456),{grouped:false});
+const [secondFix] = await branches(secondConfig,[dependency('a','4.0.2')]);
+assert.ok(secondFix.branchName.includes('fin211-recovery-456-'));
+assert.equal((await gate(secondFix)).result,passed);
+console.log('PASS: successive automatic failures keep future major fixes eligible with default auto');
+
+// Manual ignores outside this dependency/family retain their existing cache keys.
+const [unrelated] = await branches(config([],{grouped:false}),[dependency('z','4.0.1')]);
+const [otherMajor] = await branches(config([],{grouped:false}),[dependency('a','5.0.1')]);
+ignore(unrelated);ignore(otherMajor);
+for (const dep of [dependency('z','4.0.1'),dependency('a','5.0.1')]) {
+  const [manual] = await branches(secondConfig,[dep]);
+  assert.ok(!manual.branchName.includes('recovery'));
+  assert.equal((await gate(manual)).result,'already-existed');
 }
-console.log('PASS: future major patch visible with global always; exact version needs explicit approval');
+console.log('PASS: unrelated dependencies and other majors remain manually ignored');
 
-// Regression proof: one quarantined member must not block a newer group member.
-const unsafe = config([rule('a', '4.0.0', 123, false)]);
-const [unsafeGroup] = await branches(unsafe, [dependency('a', '4.0.0'), dependency('b', '5.0.0')]);
-closedBranch = unsafeGroup.branchName;
-existingBranches = new Set([closedBranch]);
-assert.equal((await gate(unsafeGroup)).result, 'already-existed');
-const mixedConfig = config([rule('a', '4.0.0')]);
-const mixed = await branches(mixedConfig, [dependency('a', '4.0.0'), dependency('b', '5.0.0')]);
-assert.equal(mixed.length, 2);
-const a = mixed.find((branch) => branch.depName === 'a');
-const b = mixed.find((branch) => branch.depName === 'b');
-assert.equal((await gate(a)).result, 'needs-approval');
-assert.equal((await gate(b)).result, passed);
-assert.equal(b.branchName, closedBranch);
-console.log('PASS: failed member isolated, newer group member remains eligible');
+// Related group members share the new recovery generation and remain grouped.
+const groupItems = [update('a','4.0.0'),update('b','4.0.0')];
+const [originalGroup] = await branches(config([]),[dependency('a','4.0.0'),dependency('b','4.0.0')]);
+ignore(originalGroup);
+const groupConfig = config(failureRules(groupItems));
+const futureGroup = await branches(groupConfig,[dependency('a','4.0.1'),dependency('b','4.0.2')]);
+assert.equal(futureGroup.length,1);
+assert.equal(futureGroup[0].upgrades.length,2);
+assert.ok(futureGroup[0].branchName.includes('fin211-recovery-123-'));
+assert.equal((await gate(futureGroup[0])).result,passed);
+console.log('PASS: future fixes of the failed group stay grouped and eligible');
 
-// The exact failed group is split into visible approvals; no recreation loop.
-const exactConfig = config([rule('a', '4.0.0'), rule('b', '5.0.0')]);
-const exact = await branches(exactConfig, [dependency('a', '4.0.0'), dependency('b', '5.0.0')]);
-assert.equal(exact.length, 2);
+// A failed member is isolated while a newer member of its original group proceeds.
+const mixed = await branches(groupConfig,[dependency('a','4.0.0'),dependency('b','4.0.2')]);
+assert.equal(mixed.length,2);
+assert.equal((await gate(mixed.find(branch=>branch.depName==='a'))).result,'needs-approval');
+assert.equal((await gate(mixed.find(branch=>branch.depName==='b'))).result,passed);
+console.log('PASS: failed group member waits while newer group member proceeds');
+
+// The exact failed group becomes visible approvals; real Dashboard checkboxes work.
+const exact = await branches(groupConfig,[dependency('a','4.0.0'),dependency('b','4.0.0')]);
+assert.equal(exact.length,2);
 for (const branch of exact) {
-  assert.equal((await gate(branch)).result, 'needs-approval');
-  assert.equal((await explicitApproval(branch, exactConfig)).result, passed);
+  assert.equal((await gate(branch)).result,'needs-approval');
+  assert.equal((await explicitApproval(branch,groupConfig)).result,passed);
 }
-await ensureDependencyDashboard({ ...exactConfig, dependencyDashboardChecks: {} },
-  exact.map((branch) => ({ ...branch, result: 'needs-approval' })), {}, {});
-assert.match(dashboardBody, /## Pending Approval/);
+await ensureDependencyDashboard({...groupConfig,dependencyDashboardChecks:{}},
+  exact.map(branch=>({...branch,result:'needs-approval'})),{},{});
+assert.match(dashboardBody,/## Pending Approval/);
 for (const branch of exact) assert.ok(dashboardBody.includes(`<!-- approve-branch=${branch.branchName} -->`));
-console.log('PASS: same failed group requires approval; real Dashboard renderer/parser support retries');
+console.log('PASS: exact failed group requires approval and real Dashboard retries pass');
 
-// A second failure after a manual retry needs a NEW approval despite saved branches.
-existingBranches = new Set([...existingBranches, ...exact.map((branch) => branch.branchName)]);
-const nextConfig = config([rule('a', '4.0.0', 456), rule('b', '5.0.0', 456)]);
-const next = await branches(nextConfig, [dependency('a', '4.0.0'), dependency('b', '5.0.0')]);
+// Closing an explicitly retried exact version creates a fresh approval generation.
+for (const branch of exact) ignore(branch);
+const nextConfig = config(failureRules(groupItems,456));
+const next = await branches(nextConfig,[dependency('a','4.0.0'),dependency('b','4.0.0')]);
 for (const branch of next) {
   assert.ok(branch.branchName.includes('fin211-retry-456-'));
-  assert.equal((await gate(branch)).result, 'needs-approval');
+  assert.equal((await gate(branch)).result,'needs-approval');
 }
-console.log('PASS: next generation needs fresh approval and preserves earlier branches');
+console.log('PASS: another failed retry requires a fresh explicit approval');
 
-// Ordinary minor fixes are not matched by the failed exact-value rule either.
-const minorConfig = config([rule('a', '3.1.0')], { grouped: false });
-const [minor] = await branches(minorConfig, [dependency('a', '3.1.1', '3.0.0', 'minor')]);
-assert.equal(minor.dependencyDashboardApproval, false);
-assert.equal((await gate(minor)).result, passed);
-console.log('PASS: newer minor/patch values remain eligible');
+// Ordinary minor fixes also escape the exact failed-value quarantine.
+const minorConfig = config(failureRules([update('a','3.1.0')]),{grouped:false});
+const [minor] = await branches(minorConfig,[dependency('a','3.1.1','3.0.0','minor')]);
+assert.equal(minor.dependencyDashboardApproval,false);
+assert.equal((await gate(minor)).result,passed);
+console.log('PASS: future minor/patch values remain eligible');
 
 // Moving tags must not hide a newer security/fixed digest under the same tag.
 const { applyPackageRules } = await import(mod('util/package-rules/index.js'));
