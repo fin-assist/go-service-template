@@ -7,6 +7,10 @@
 - [docs/migrations.md](docs/migrations.md) — миграции и запросы на pgx ([FIN-115](https://finassist.youtrack.cloud/issue/FIN-115)).
 - [AGENTS.md](AGENTS.md) — карта и правила для агентов, Code Review Rules.
 
+## Автоматизация обновлений зависимостей
+
+[Политика Renovate](docs/renovate-policy.md) (FIN-211): одна актуальная release/main, автомерж полностью ботских PR после обязательного CI, один повтор красного CI и закрытие с явным повтором через Dependency Dashboard. AndroidX/Compose остаются на ручной проверке. Исходные группировки, ограничения версий и расписания — `renovate-base.json`; generated target и quarantine — ветка `renovate-policy`. Активация требует отдельного токена и строгой защиты веток; по умолчанию выключена.
+
 ## Новый сервис из шаблона
 
 1. Создать репозиторий из шаблона (GitHub → «Use this template»).
@@ -16,6 +20,8 @@
 5. Сервис с данными пользователей — заменить `NoTombstones` на библиотеку `go-tombstone` (FIN-110); остальные библиотеки — по «Библиотеки и обновления» ниже.
 6. Секреты репозитория: `CLAUDE_CODE_OAUTH_TOKEN` (ревью `@claude`), `GO_MODULES_TOKEN`, если подключаются приватные модули fin-assist. Установить Claude GitHub App и Codex.
 7. Обновить README и `AGENTS.md` под сервис.
+
+Перед первым запуском Renovate заменить **оба** `local>` ref в `renovate.json` на новый `fin-assist/<repo>`. GitHub template не копирует служебную ветку: создать собственную `renovate-policy` по [инструкции bootstrap](docs/renovate-policy.md#подготовка-и-включение), затем защитить её и настроить `controllerLogin`, обязательные checks и Environment `renovate-policy` с запуском только из `main` и доступ к organization secret `RENOVATE_POLICY_TOKEN` (выбранный владельцем вариант; новому репозиторию явно проверить доступность секрета). Проверить, что оба presets разрешаются из нового репозитория, а не из шаблона. До проверки оставить `RENOVATE_POLICY_ENABLED` выключенным; секреты, environments и branch protection из шаблона не наследуются.
 
 ## Раскладка
 
@@ -60,7 +66,7 @@ make run
 
 - **Подключение** — по разделу «Внедрение» README библиотеки: `go get github.com/fin-assist/go-<имя>@vX.Y.Z`, источник миграций в `MigrationSources()` до источника сервиса, сборка в `wire()` — библиотека получает от сервиса транзакцию (`db.Tx`), логгер, реестр метрик, часы и настройки.
 - **Версии** — semver-теги библиотеки, `go.mod` сервиса закрепляет версию; до первого прода — `v0`, несовместимое изменение — новый MINOR с записью «Несовместимо» в CHANGELOG библиотеки. Правила — `docs/releasing.md` в `fin-assist/go-library-template`.
-- **Обновления приносит Renovate** (`renovate.json`): модули `github.com/fin-assist/*` (библиотеки и `contracts/gen/go`) — отдельный PR сразу после тега, остальные зависимости — один PR в неделю, версия Go — вручную. PR Renovate проходит CI сервиса; при несовместимом обновлении правки делаются в той же ветке по CHANGELOG библиотеки.
+- **Обновления приносит Renovate** (`renovate.json`): модули `github.com/fin-assist/*` (библиотеки и `contracts/gen/go`) — отдельный PR сразу после тега, остальные зависимости — один PR в неделю, версия Go — вручную. PR Renovate проходит CI сервиса и обрабатывается по [политике FIN-211](docs/renovate-policy.md). При несовместимом обновлении человеческий коммит в открытом PR переводит его на ручное сопровождение; если ботский PR уже закрыт после повторного падения, исправления сервиса идут отдельным PR с задачей YouTrack. Порядок миграции — по CHANGELOG библиотеки.
 - **Проверить библиотеку до выпуска** — локально `go mod edit -replace github.com/fin-assist/go-<имя>=../go-<имя>`; `replace` в PR сервиса не попадает.
 
 ## Проверки
