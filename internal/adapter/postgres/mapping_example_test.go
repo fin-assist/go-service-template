@@ -58,7 +58,7 @@ func (r exampleCategoryRepository) Assign(ctx context.Context, id int) error {
 	return err
 }
 
-func TestAdapterMapsCommitAndUsecaseReturnsContractError(t *testing.T) {
+func TestIntegrationAdapterMapsCommitAndUsecaseReturnsContractError(t *testing.T) {
 	db := open(t)
 	ctx := context.Background()
 	_, err := db.Writer(ctx).Exec(ctx, `CREATE TABLE example_category(id int PRIMARY KEY);
@@ -87,7 +87,7 @@ func TestAdapterMapsCommitAndUsecaseReturnsContractError(t *testing.T) {
 	}
 }
 
-func TestForeignTransactionCannotFallBackToPool(t *testing.T) {
+func TestIntegrationForeignTransactionCannotFallBackToPool(t *testing.T) {
 	db, foreign := open(t), open(t)
 	err := db.Run(context.Background(), func(ctx context.Context) error {
 		for _, q := range []postgres.Querier{foreign.Writer(ctx), foreign.Reader(ctx)} {
@@ -134,7 +134,7 @@ func TestForeignTransactionCannotFallBackToPool(t *testing.T) {
 	}
 }
 
-func TestRunWithPreservesTransactionOptions(t *testing.T) {
+func TestIntegrationRunWithPreservesTransactionOptions(t *testing.T) {
 	db := open(t)
 	err := db.RunWith(context.Background(), pgx.TxOptions{IsoLevel: pgx.Serializable, AccessMode: pgx.ReadOnly}, func(ctx context.Context) error {
 		var isolation, readOnly string
