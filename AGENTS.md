@@ -129,6 +129,11 @@ Priorities when they pull apart, in this order:
 - Database: SQL with parameters only (`$1`), table and column names are constants. A usecase opens the transaction
   with `db.Run`; repositories take `db.Writer(ctx)` / `db.Reader(ctx)`; no calls to other services inside `Run`.
   Migrations follow `docs/migrations.md` (two releases for an incompatible change, `CONCURRENTLY` alone in a file).
+- **SQL construction:** use [Squirrel](https://github.com/Masterminds/squirrel)
+  (`github.com/Masterminds/squirrel`) instead of assembling SQL by concatenating Go strings wherever the builder
+  supports the query. This is an approved exception to "standard library first". Pass values as query arguments,
+  use `PlaceholderFormat(sq.Dollar)` for PostgreSQL, and keep table and column names constant. If the builder
+  cannot express the query, explain the limitation next to the manual SQL construction and keep it parameterized.
 - No validation or logic in the schema (FIN-194, `docs/migrations.md` «Что можно в схеме»): allowed are `PRIMARY KEY`,
   `UNIQUE`, `FOREIGN KEY` with any `ON DELETE` / `ON UPDATE` action (`SET DEFAULT` included), `NOT NULL`, `DEFAULT`,
   indexes (unique, partial and expression ones included) and generated columns `GENERATED ALWAYS AS (…) STORED` (a
