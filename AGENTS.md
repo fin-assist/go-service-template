@@ -21,7 +21,7 @@ updates them in the same PR. A service made from the template rewrites the first
   never defines its own `.proto`, error codes or REST fields: a change goes to `contracts` first (its own FIN issue
   and PR), then the service bumps the module.
 - Shared code: Go libraries made from `fin-assist/go-library-template` (FIN-118) — `go-identity`, `go-idempotency`,
-  `go-outbox`, `go-tombstone`. The service imports them at tagged versions and wires them in `internal/app` by the
+  `go-outbox`, `go-tombstone`, `go-postgres` (FIN-195). The service imports them at tagged versions and wires them in `internal/app` by the
   «Внедрение» section of their README; versions and compatibility — `docs/releasing.md` of the library template.
   Code that more than one service needs goes into a library (its own FIN issue), not into a copy here.
 - Architecture, MVP scope, product decisions: Confluence PF (https://finassist.atlassian.net/wiki/spaces/PF),
@@ -44,7 +44,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/` |
 | gRPC server, interceptors, access table types, identity and tombstone interfaces | `internal/adapter/grpc/server/`; rules — `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
-| Pools, transaction manager, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
+| Pools, go-postgres transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
 | Migration runner and the PostgreSQL for tests | `internal/adapter/postgres/migrate/`, `migratetest/` |
 | SQL migrations (embedded) | `migrations/`; rules — `docs/migrations.md` |
 | Clients of other services, service token source | `internal/adapter/client/` |
@@ -126,6 +126,12 @@ Priorities when they pull apart, in this order:
 - Identity: the user of a user call is `reqctx.UserID(ctx)` (the verified `sub`), never a request field; a system
   call takes `user_id` from the request. Every new method gets its row in `AccessPolicy()`, copied from
   grpc-api.md 3.3; the server does not start without it.
+- Constraint errors (FIN-195): go-postgres owns the transaction mechanism. Adapters define one
+  operation-specific mapper on the outer RunMapped, matching both SQLSTATE and constraint name;
+  usecases see only domain errors and translate them with finerr per the method contract. Never
+  install a global mapping or parse pgconn in a usecase. Deferred errors are mapped at actual COMMIT;
+  nested work uses Run, not another mapper. Unknown violations remain INTERNAL. Never copy PgError.Detail
+  or wrap the raw PgError into a domain error. See docs/migrations.md and mapping_example_test.go.
 - Database: SQL with parameters only (`$1`), table and column names are constants. A usecase opens the transaction
   with `db.Run`; repositories take `db.Writer(ctx)` / `db.Reader(ctx)`; no calls to other services inside `Run`.
   Migrations follow `docs/migrations.md` (two releases for an incompatible change, `CONCURRENTLY` alone in a file).
