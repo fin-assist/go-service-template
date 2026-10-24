@@ -1,5 +1,7 @@
 # go-service-template
 
+Выпуск версии сервиса и повторная публикация GitHub Release описаны в [docs/releasing.md](docs/releasing.md). История изменений — [CHANGELOG.md](CHANGELOG.md). Новый сервис начинает с пустого `Unreleased`; версии и теги создаёт владелец после PR и post-merge CI. Публикация образа и deployment — отдельные этапы.
+
 Шаблон репозитория Go-сервиса «Понятные финансы» ([FIN-117](https://finassist.youtrack.cloud/issue/FIN-117)). Из него создаются `bank-bff`, `user`, `bank-statement-data`, `analytics`, `assistant`. Контракты (`.proto`, сгенерированный код, реестр ошибок `finerr`) — в [`fin-assist/contracts`](https://github.com/fin-assist/contracts), модуль `github.com/fin-assist/contracts/gen/go`.
 
 - [docs/server.md](docs/server.md) — gRPC-сервер и интерцепторы, идентичность, таблица доступа, клиенты, транзакции, логи и метрики.
