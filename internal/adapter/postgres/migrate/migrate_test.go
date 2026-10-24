@@ -264,3 +264,35 @@ func exists(t *testing.T, dsn, table string) bool {
 	}
 	return ok
 }
+
+func TestUnitInvalidSourcesFailBeforeDatabaseWork(t *testing.T) {
+	valid := migrate.Source{Name: "service", Table: "schema_migrations", FS: fstest.MapFS{}}
+	for name, sources := range map[string][]migrate.Source{
+		"missing-name":   {{Table: valid.Table, FS: valid.FS}},
+		"missing-table":  {{Name: valid.Name, FS: valid.FS}},
+		"missing-files":  {{Name: valid.Name, Table: valid.Table}},
+		"duplicate-name": {valid, {Name: valid.Name, Table: "another_version_table", FS: valid.FS}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// There is deliberately no usable database: source validation must run first.
+			config := cfg("not a database URL")
+			expected := "name, table and files are required"
+			if name == "duplicate-name" {
+				expected = "listed twice"
+			}
+			rejected := func(err error) {
+				t.Helper()
+				if err == nil || !strings.Contains(err.Error(), expected) {
+					t.Fatalf("source guard error=%v, want %q before database work", err, expected)
+				}
+			}
+			rejected(migrate.Up(t.Context(), config, sources))
+			_, err := migrate.Versions(t.Context(), config, sources)
+			rejected(err)
+			if len(sources) == 1 {
+				rejected(migrate.Down(t.Context(), config, sources[0], 1))
+				rejected(migrate.Force(t.Context(), config, sources[0], 1))
+			}
+		})
+	}
+}

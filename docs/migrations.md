@@ -128,6 +128,7 @@ service migrate force <source> <version>  # выставить версию и �
 ## Проверки в CI
 
 - `go test ./...` с PostgreSQL в Docker (testcontainers): для каждой миграции сервиса — «вверх → вниз → вверх» на чистой базе (`migrations/migrations_test.go`), плюс тесты самого запуска.
+- У свежего шаблона без service SQL тест не пропускается: на настоящем PostgreSQL повторный `Up` и `Versions` подтверждают чистую версию0 и отсутствие таблиц приложения. `Down`/`Force` не создают вымышленную версию; lifecycle непустого service/library source отдельно проверяется SQL-fixtures самого migration runner.
 - Squawk по **новым** up-файлам PR (`.squawk.toml`). Down-файлы проверяет «вверх → вниз → вверх».
 - Существующие файлы в `migrations/` не меняются.
 

@@ -1,7 +1,10 @@
 package migrations_test
 
 import (
+	"log/slog"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate"
 	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate/migratetest"
@@ -15,7 +18,37 @@ func TestIntegrationUpDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !hasMigrations(t) {
-		t.Skip("the service has no migrations yet")
+		// A fresh template is a valid empty source, not an unexecuted test.
+		// PostgreSQL still validates runner serialization and metadata handling.
+		dsn := migratetest.DSN(t)
+		cfg := migrate.DefaultConfig(dsn)
+		cfg.Logger = slog.New(slog.DiscardHandler)
+		for range 2 {
+			if err := migrate.Up(t.Context(), cfg, []migrate.Source{src}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		versions, err := migrate.Versions(t.Context(), cfg, []migrate.Source{src})
+		if err != nil || len(versions) != 1 || versions[0].Version != 0 || versions[0].Dirty {
+			t.Fatalf("empty source version: %v %v", versions, err)
+		}
+		if err := migrate.Down(t.Context(), cfg, src, 1); err == nil {
+			t.Fatal("empty source cannot roll back SQL")
+		}
+		if err := migrate.Force(t.Context(), cfg, src, 1); err == nil {
+			t.Fatal("empty source cannot fabricate a migration version")
+		}
+		db, err := pgx.Connect(t.Context(), dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close(t.Context()) }()
+		var businessTables, appliedVersions int
+		err = db.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM pg_tables WHERE schemaname='public' AND tablename<>'schema_migrations'), (SELECT count(*) FROM schema_migrations)`).Scan(&businessTables, &appliedVersions)
+		if err != nil || businessTables != 0 || appliedVersions != 0 {
+			t.Fatalf("empty source created application schema: tables=%d versions=%d err=%v", businessTables, appliedVersions, err)
+		}
+		return
 	}
 	migratetest.CheckUpDownUp(t, src)
 }

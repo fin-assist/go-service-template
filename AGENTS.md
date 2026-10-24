@@ -218,6 +218,7 @@ Also:
   pinned `go-test-coverage v2.20.1`. The owner's accepted rounding permits 79.95% to display/pass as 80.0%.
   Unit, integration and API instrument the identical `./...`, including generated code and `.go` test helpers;
   no exclusions or coverage-ignore annotations. Combined is an informational union, never a substitute.
+- A fresh template without service SQL still runs its migration test on PostgreSQL: assert clean version zero and no application tables, rather than skipping or adding dummy SQL. Nonempty service/library runner fixtures retain their up/down/up integration coverage.
 - Name every test `TestUnit…`, `TestIntegration…` or `TestAPI…` by its actual dependencies. Existing tests are
   retained in exactly one suite. Direct handler/interceptor calls on fakes are unit, transport/client and actual
   jobs are integration, and full service assembly through the public gRPC API is API. Template API checks health

@@ -97,7 +97,7 @@ make lint
 
 - **Unit** — `TestUnit…`: изолированные правила, преобразования и валидация на фейках, без БД и сети.
 - **Integration** — `TestIntegration…`: настоящие PostgreSQL/миграции/транзакции, транспортные клиенты на тестовых серверах, реальные запуски фоновых заданий.
-- **API** — `TestAPI…`: полная сборка сервиса и вызов публичного gRPC API. У шаблона это health и отказ неизвестному методу; бизнес-RPC шаблон не реализует.
+- **API** — `TestAPI…`: полная сборка сервиса и вызов публичного gRPC API. У шаблона это health и отказ неизвестному методу, а также настоящая CLI assembly с `/healthz`, `/readyz`, `/metrics`, завершением работы и отказом API после неудачного restart; бизнес-RPC шаблон не реализует.
 
 У всех трёх прогонов одинаковый `-coverpkg=./...`: весь production-код, generated-код и тестовая инфраструктура в обычных `.go` файлах учитываются одинаково. Исключений ради порога нет. Тестовые `_test.go` файлы и `testdata/` Go штатно не инструментирует. Существующие тесты распределены по фактической сборке, без удаления или подмены уровня.
 
@@ -115,6 +115,6 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 
 CI сохраняет обязательный check `go`: он собирает и проверяет каждый набор, даже при недостаточном покрытии другого; итог падает при любом неуспешном наборе или пороге. Сводка и artifact `coverage` содержат `.out`, `.jsonl`, штатные `.coverage.txt`/`.report.txt` для unit/integration/API/combined. Ссылка на artifact находится в сводке CI. Права записи в PR, в том числе из fork, не нужны. Порог statements не доказывает полноту бизнес-сценариев — она проверяется отдельно на ревью.
 
-Исходный замер шаблона: unit 33,4%, integration 69,9%, API 25,2%, combined 86,3% (1098 statements). Это невыполненные пороги, а не готовность к приёмке FIN-238; функциональность ради процента не подменяется.
+Актуальный локальный замер на Go1.26.0/PostgreSQL18: unit52.4%, integration69.7%, API46.1%, combined89.2% (1015 statements). Все три collectors и execution guards проходят без skip; все три80% критерия пока невыполнены, required CI остаётся красным. Сценарии и точные native per-file границы — [docs/testing.md](docs/testing.md). Пустой service migration source проверяется на PostgreSQL без SQL-пустышек.
 
 Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.
