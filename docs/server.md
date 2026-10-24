@@ -59,7 +59,7 @@ Tombstone (FIN-110) — интерфейс `Tombstones`; до библиотек
 
 ## Транзакции и чтение
 
-`postgres.DB` — пулы primary и реплик, [migrations.md](migrations.md), «Запросы на pgx»:
+`postgres.DB` — пулы primary и реплик и тонкий адаптер `go-postgres` (FIN-195), [migrations.md](migrations.md), «Запросы на pgx»:
 
 - `db.Run(ctx, func(ctx) error)` — транзакция на primary: commit при `nil`, rollback при ошибке и панике; вложенный `Run` присоединяется к внешнему.
 - `db.Writer(ctx)` — транзакция контекста или primary; `db.Reader(ctx)` — транзакция, primary при `x-read-primary: 1` от `bank-bff`, иначе реплики.
