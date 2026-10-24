@@ -167,9 +167,16 @@ func TestAPICommandEmptyMigrationDeploymentServesOperationsAndStops(t *testing.T
 			if err := run(ctx, []string{"serve"}); err == nil {
 				t.Fatal("failed rollout unexpectedly started")
 			}
-			probe, cancelProbe := context.WithTimeout(t.Context(), 250*time.Millisecond)
+			// A new channel must attempt this deployment's listener rather than
+			// inheriting backoff from the deliberately stopped healthy channel.
+			probeConn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = probeConn.Close() }()
+			probe, cancelProbe := context.WithTimeout(t.Context(), time.Second)
 			defer cancelProbe()
-			_, err := healthv1.NewHealthClient(conn).Check(probe, &healthv1.HealthCheckRequest{})
+			_, err = healthv1.NewHealthClient(probeConn).Check(probe, &healthv1.HealthCheckRequest{}, grpc.WaitForReady(true))
 			if code := status.Code(err); code != codes.Unavailable && code != codes.DeadlineExceeded {
 				t.Fatalf("failed rollout still serves health: %v", err)
 			}
