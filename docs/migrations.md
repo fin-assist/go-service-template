@@ -2,7 +2,7 @@
 
 Решение — [FIN-115](https://finassist.youtrack.cloud/issue/FIN-115), Confluence «Архитектура» → «Миграции и доступ к БД».
 
-- Миграции — [golang-migrate](https://github.com/golang-migrate/migrate), драйвер `pgx/v5`.
+- Runner — [`go-migrate v0.1.0`](https://github.com/fin-assist/go-migrate/tree/v0.1.0), использующий golang-migrate и pgx/v5. Публичные операции, queue/cancellation/cleanup и typed errors — в README библиотеки; сервис задаёт источники и CLI.
 - Запросы — ручной SQL на `pgx/v5`, без ORM и генерации кода.
 - Линтер миграций — [squawk](https://squawkhq.com) в CI.
 
@@ -21,7 +21,7 @@
 
 ## Как выполняется файл
 
-golang-migrate отправляет файл целиком одним запросом. PostgreSQL выполняет такой запрос **как одну неявную транзакцию**: если упала любая команда, откатывается весь файл (проверяется тестом `TestIntegrationFailedMigrationIsDirtyUntilForced`). Поэтому:
+golang-migrate отправляет файл целиком одним запросом. PostgreSQL выполняет такой запрос **как одну неявную транзакцию**: если упала любая команда, откатывается весь файл (проверяется реальными PostgreSQL-тестами библиотеки go-migrate). Поэтому:
 
 - `BEGIN; … COMMIT;` в файле не нужен — файл и так атомарен.
 - **`CREATE INDEX CONCURRENTLY` и `DROP INDEX CONCURRENTLY` — одной командой в отдельном файле.** Внутри транзакции они запрещены, а с другой командой в том же файле транзакция будет. Если `CONCURRENTLY` упал, остаётся индекс в состоянии `INVALID`: его удаляют (`DROP INDEX CONCURRENTLY IF EXISTS …`) и запускают снова. Поэтому в таких файлах — `IF NOT EXISTS` / `IF EXISTS`.
@@ -49,7 +49,7 @@ service migrate force <source> <version>  # выставить версию и �
 - **Прод** — Job k3s с командой `migrate up` до раскатки Deployment (манифесты — `fin-assist/infra`). Под при старте миграции не запускает.
 - **Стенд** — скрипт деплоя запускает `migrate up` перед перезапуском сервиса под systemd.
 
-Поведение одинаковое. Два запуска одновременно (повторённый Job, Job и скрипт) не мешают друг другу: второй ждёт первого на отдельной advisory-блокировке источника, затем видит, что всё применено. Отдельная блокировка нужна потому, что `lock_timeout` ограничивает и ожидание advisory-блокировки самого golang-migrate — без неё второй запуск падал бы через 5 секунд. Это проверяет `TestIntegrationConcurrentRunsWaitForEachOther`.
+Поведение одинаковое. Два запуска одновременно (повторённый Job, Job и скрипт) не мешают друг другу: второй ждёт первого на отдельной advisory-блокировке источника, затем видит, что всё применено. Отдельная блокировка нужна потому, что `lock_timeout` ограничивает и ожидание advisory-блокировки самого golang-migrate — без неё второй запуск падал бы через 5 секунд. Поведение конкурирующих запусков проверяется PostgreSQL-тестами go-migrate; сервис не содержит копию runner.
 
 ## Источники: сервис и библиотеки
 
@@ -60,7 +60,7 @@ service migrate force <source> <version>  # выставить версию и �
 {Name: "service", Table: "schema_migrations", FS: migrations.FS},
 ```
 
-Библиотека отдаёт `Migrations` (`fs.FS` со своими файлами по тем же правилам), `MigrationsName` и `MigrationsTable` (`<библиотека>_schema_migrations`), а в своих тестах проходит «вверх → вниз → вверх» пакетом `internal/pgtest` — копией `migratetest` в [`fin-assist/go-library-template`](https://github.com/fin-assist/go-library-template). Правило выпущенных миграций библиотеки — в её `docs/releasing.md`, «Миграции»: файл не меняется, несовместимое изменение схемы — в два выпуска.
+Библиотека отдаёт `Migrations` (`fs.FS` со своими файлами по тем же правилам), `MigrationsName` и `MigrationsTable` (`<библиотека>_schema_migrations`), а сервис проверяет подключённый источник публичным `github.com/fin-assist/go-migrate/migratetest.CheckUpDownUp(t, dsn, source)`. Собственные тесты библиотеки определяются её README; сервис не копирует её test harness. Правило выпущенных миграций библиотеки — в её `docs/releasing.md`, «Миграции»: файл не меняется, несовместимое изменение схемы — в два выпуска.
 
 ## Что можно в схеме
 
@@ -113,7 +113,7 @@ service migrate force <source> <version>  # выставить версию и �
 
 ### Нарушения ограничений и транзакции (FIN-195)
 
-Общий механизм находится в `github.com/fin-assist/go-postgres`; `postgres.DB` — тонкий адаптер сервиса с настройкой пулов и выбором primary/replica. Usecase задаёт границы операции через собственный `Run`-интерфейс. Для операции с ожидаемыми нарушениями адаптер реализует этот интерфейс через `db.RunMapped(ctx, opts, mapper, fn)`.
+Общий механизм находится в `github.com/fin-assist/go-postgres` v0.2.0; `OpenPools` открывает пулы по переданным сервисом настройкам, `postgres.DB` остаётся тонким адаптером менеджера транзакций с выбором primary/replica. Usecase задаёт границы операции через собственный `Run`-интерфейс. Для операции с ожидаемыми нарушениями адаптер реализует этот интерфейс через `db.RunMapped(ctx, opts, mapper, fn)`.
 
 Обработчик определён в адаптере **конкретной операции** и использует `postgres.IsViolation(err, SQLSTATE, constraint)`: проверяются и код, и имя ограничения. Он возвращает доменную ошибку без исходного `PgError` и его `Detail` либо `nil` для неизвестного случая (сохраняется исходная ошибка). Usecase переводит доменную ошибку в `finerr` по контракту: отсутствующий/чужой объект — `NOT_FOUND` или специальный код метода; `VALIDATION_ERROR` — только неверный формат. Для удаления родителя с зависимостями нужен код контракта; при отсутствии сначала изменить `contracts`. Неожиданное нарушение, например ключ, сформированный сервисом, остаётся внутренней ошибкой.
 
@@ -121,14 +121,14 @@ service migrate force <source> <version>  # выставить версию и �
 
 При нескольких репозиториях адаптер внешней операции явно выбирает ожидаемые нарушения; глобального реестра нет. Неоднозначное нарушение не переводится. Вложенный `Run` присоединяется к транзакции без COMMIT; его ошибки нужно возвращать наружу. Вложенный `RunMapped` с обработчиком отвергается до callback: обработчик должен принадлежать внешней операции. Опции вложенного `RunWith` игнорируются, действуют внешние. Контекст другого менеджера отвергается, Writer/Reader не уходят на свой пул в обход транзакции.
 
-Проверяемый пример всех слоёв — `internal/adapter/postgres/mapping_example_test.go`: operation runner адаптера, интерфейсы usecase, доменная ошибка и `finerr.NOT_FOUND` после ошибки COMMIT. Библиотека не импортирует домен сервиса, контракты или `internal/reqctx`.
+Проверяемый пример всех слоёв — `internal/adapter/postgres/mapping_example_test.go`: operation runner адаптера, интерфейсы usecase, доменная ошибка и `finerr.NOT_FOUND` после ошибки COMMIT. Библиотека не импортирует домен сервиса, контракты или `go-grpc/reqctx`.
 
 Для новых миграций предлагаются явные имена `CONSTRAINT <name>` — на решение владельца. Существующие миграции и имена в рамках FIN-195 не меняются.
 
 ## Проверки в CI
 
 - `go test ./...` с PostgreSQL в Docker (testcontainers): для каждой миграции сервиса — «вверх → вниз → вверх» на чистой базе (`migrations/migrations_test.go`), плюс тесты самого запуска.
-- У свежего шаблона без service SQL тест не пропускается: на настоящем PostgreSQL повторный `Up` и `Versions` подтверждают чистую версию0 и отсутствие таблиц приложения. `Down`/`Force` не создают вымышленную версию; lifecycle непустого service/library source отдельно проверяется SQL-fixtures самого migration runner.
+- У свежего шаблона без service SQL тест не пропускается: на настоящем PostgreSQL повторный `Up` и `Versions` подтверждают чистую версию0 и отсутствие таблиц приложения. `Down`/`Force` не создают вымышленную версию; lifecycle непустых источников и дефекты самого runner проверяются SQL-fixtures в go-migrate. Runtime service source не получает SQL-пустышек.
 - Squawk по **новым** up-файлам PR (`.squawk.toml`). Down-файлы проверяет «вверх → вниз → вверх».
 - Существующие файлы в `migrations/` не меняются.
 
@@ -139,3 +139,11 @@ service migrate force <source> <version>  # выставить версию и �
 export TEST_DATABASE_URL='postgres://postgres@localhost:5432/postgres?sslmode=disable'
 go test ./...
 ```
+
+## Тестовая БД и публичный harness (FIN-246)
+
+Сервисный `internal/testdb` выбирает PostgreSQL18: `TEST_DATABASE_URL` внешнего тестового сервера либо testcontainer; недоступность зависимости в CI — ошибка. Он передаёт выбранный adminDSN в `migratetest.DSN(t, adminDSN)`. Публичный helper не выбирает сервер, не читает environment и не запускает container: он создаёт отдельную БД для теста и удаляет только её через зарегистрированный cleanup с ограниченным временем. Административный DSN не выводится в лог.
+
+`migratetest.CheckUpDownUp(t, dsn, source)` проверяет источник на переданной пустой БД, но не владеет этой БД и не удаляет её. Поэтому выбор сервера и lifetime container принадлежат сервисному test entrypoint, lifetime отдельной БД — вызову DSN, а SQL source — приложению/подключённой библиотеке. Production CLI использует `go-migrate` с явными DSN, context, logger и таймаутами из конфигурации; discard default logger библиотеки не заменяет прежние сервисные события миграции.
+
+`internal/testdb` и `internal/app/apitest` — тестовая инфраструктура в обычных `.go`, а не бизнес-функциональность; оба пакета остаются в одинаковом полном знаменателе unit/integration/API. Исключение библиотечного `internal/pgtest` здесь не применяется.
