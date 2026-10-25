@@ -47,7 +47,7 @@ func runServe(ctx context.Context) error {
 	return serve(ctx, cfg, log, serving{
 		grpc: a.GRPC, http: ops.Server(cfg.HTTP.Addr, ops.Handler(reg, readiness)),
 		listener: grpcLis, readiness: readiness, ping: a.DB.Ping,
-		jobs: supervisedJobs{log: log, jobs: a.Jobs},
+		jobs: supervisedJobs{log: log, clock: worker.SystemClock{}, jobs: a.Jobs},
 	})
 }
 
@@ -67,12 +67,13 @@ type readinessLoop interface {
 }
 type backgroundJobs interface{ Run(context.Context) error }
 type supervisedJobs struct {
-	log  *slog.Logger
-	jobs []worker.Job
+	clock worker.Clock
+	log   *slog.Logger
+	jobs  []worker.Job
 }
 
 func (j supervisedJobs) Run(ctx context.Context) error {
-	return worker.Run(ctx, worker.Options{Logger: j.log, Clock: worker.SystemClock{}}, j.jobs...)
+	return worker.Run(ctx, worker.Options{Logger: j.log, Clock: j.clock, RestartDelay: 5 * time.Second}, j.jobs...)
 }
 
 type serving struct {

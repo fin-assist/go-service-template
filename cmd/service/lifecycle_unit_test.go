@@ -254,17 +254,17 @@ func TestUnitLifecycleShutdownBudgetCutsDrainAfterParentCancellation(t *testing.
 
 func TestUnitSupervisedJobsUseServiceOwnedOptionsAndHonorCancellation(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
-	if err := (supervisedJobs{log: log}).Run(t.Context()); err != nil {
+	if err := (supervisedJobs{clock: worker.SystemClock{}, log: log}).Run(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := (supervisedJobs{log: log, jobs: []worker.Job{{Name: "invalid"}}}).Run(t.Context()); err == nil {
+	if err := (supervisedJobs{clock: worker.SystemClock{}, log: log, jobs: []worker.Job{{Name: "invalid"}}}).Run(t.Context()); err == nil {
 		t.Fatal("invalid assembly not surfaced")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	started := make(chan struct{})
 	cleaned := make(chan struct{})
-	jobs := supervisedJobs{log: log, jobs: []worker.Job{{Name: "cooperative", Run: func(ctx context.Context) error { close(started); <-ctx.Done(); close(cleaned); return nil }}}}
+	jobs := supervisedJobs{clock: worker.SystemClock{}, log: log, jobs: []worker.Job{{Name: "cooperative", Run: func(ctx context.Context) error { close(started); <-ctx.Done(); close(cleaned); return nil }}}}
 	done := make(chan error, 1)
 	go func() { done <- jobs.Run(ctx) }()
 	receiveLifecycle(t, started)
@@ -273,4 +273,62 @@ func TestUnitSupervisedJobsUseServiceOwnedOptionsAndHonorCancellation(t *testing
 		t.Fatal(err)
 	}
 	receiveLifecycle(t, cleaned)
+}
+
+// The clock observes the service policy without waiting five wall-clock seconds.
+type restartClock struct {
+	durations chan time.Duration
+	ticks     chan time.Time
+	stopped   chan struct{}
+}
+
+func (c restartClock) NewTimer(d time.Duration) worker.Timer {
+	c.durations <- d
+	return restartTimer{ticks: c.ticks, stopped: c.stopped}
+}
+func (restartClock) NewTicker(time.Duration) worker.Ticker { panic("unexpected ticker in supervisor") }
+
+type restartTimer struct {
+	ticks   <-chan time.Time
+	stopped chan struct{}
+}
+
+func (t restartTimer) C() <-chan time.Time { return t.ticks }
+func (t restartTimer) Stop()               { close(t.stopped) }
+
+func TestUnitSupervisedJobsPinFiveSecondRestartPolicy(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	clock := restartClock{durations: make(chan time.Duration, 1), ticks: make(chan time.Time, 1), stopped: make(chan struct{})}
+	calls := make(chan int, 2)
+	count := 0
+	jobs := supervisedJobs{log: slog.New(slog.DiscardHandler), clock: clock, jobs: []worker.Job{{Name: "restarting", Run: func(context.Context) error {
+		count++
+		calls <- count
+		if count == 2 {
+			cancel()
+		}
+		return errors.New("transient job failure")
+	}}}}
+	done := make(chan error, 1)
+	go func() { done <- jobs.Run(ctx) }()
+	if receiveLifecycle(t, calls) != 1 {
+		t.Fatal("initial job not called")
+	}
+	if d := receiveLifecycle(t, clock.durations); d != 5*time.Second {
+		t.Fatalf("restart delay=%v, want5s", d)
+	}
+	select {
+	case <-calls:
+		t.Fatal("job restarted before clock fired")
+	default:
+	}
+	clock.ticks <- time.Time{}
+	if receiveLifecycle(t, calls) != 2 {
+		t.Fatal("job did not restart after clock fired")
+	}
+	if err := receiveLifecycle(t, done); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation=%v", err)
+	}
+	receiveLifecycle(t, clock.stopped)
 }
