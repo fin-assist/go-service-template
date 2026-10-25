@@ -18,9 +18,11 @@ EnvironmentFile=/etc/finassist/service/env
 Environment=ENV=stage
 LoadCredential=db-primary-dsn:/etc/finassist/service/db-primary-dsn
 Environment=DB_PRIMARY_DSN_FILE=%d/db-primary-dsn
-# The service token file of FIN-119 goes the same way:
-#LoadCredential=service-token:/etc/finassist/service/service-token
-#Environment=SERVICE_TOKEN_FILE=%d/service-token
+# AUTH_MODE=verify on the stand uses stage file keys (FIN-323). The env file sets
+# AUTH_USER_ISSUER, AUTH_USER_AUDIENCE, PEER_USER_ADDR and AUTH_STAGE_ISSUER.
+LoadCredential=stage-signing-key:/etc/finassist/service/stage-signing-key.pem
+Environment=AUTH_STAGE_SIGNING_KEY_FILE=%d/stage-signing-key
+Environment=AUTH_STAGE_PUBLIC_KEYS_FILE=/etc/finassist/stage-keys.json
 
 DynamicUser=yes
 Restart=on-failure

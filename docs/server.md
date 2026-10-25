@@ -10,7 +10,13 @@
 
 ## Identity и удалённые пользователи
 
-Сервис передаёт серверу реализации интерфейсов проверки сервисного и пользовательского токенов. В шаблоне подключение production identity остаётся явным TODO: `AUTH_MODE=verify` отказывает при старте до интеграции, а `insecure-dev` разрешён только при `ENV=dev` — это проверяют и `config.Load`, и сама сборка `app.New` (для вызовов в обход `config.Load`, например `apitest`). Это не обход проверки в stage/prod.
+Сервис передаёт серверу реализации интерфейсов проверки сервисного и пользовательского токенов. `internal/app/identity.go` выбирает их по `AUTH_MODE` (FIN-323):
+
+- `verify` (по умолчанию) — один `identity.NewAssembly` из [`go-identity` v0.2.0](https://github.com/fin-assist/go-identity/tree/v0.2.0) («Внедрение», шаг 0). `Env` = `ENV`, `Service` = `SERVICE_NAME`, часы `time.Now`, реестр метрик сервиса. Ключи access JWT пользователя приходят из `user.GetSigningKeys` по соединению `client.Dial(PEER_USER_ADDR)` с исходящим токеном самой сборки; повторяется только `GetSigningKeys`, вызовы считаются в `grpc_client_handled_total{peer="user"}`. При `ENV=prod` сервисы проверяются по токенам ServiceAccount (JWKS API-сервера по HTTPS с доверием только `AUTH_KUBERNETES_CA_FILE` и отдельным API-токеном, namespace `AUTH_KUBERNETES_NAMESPACE`), исходящий токен — projected-файл `SERVICE_TOKEN_FILE`. При `ENV=stage` — короткие JWT стенда: собственный ключ `AUTH_STAGE_SIGNING_KEY_FILE`, ключи сервисов `AUTH_STAGE_PUBLIC_KEYS_FILE`, общий `AUTH_STAGE_ISSUER`; файлы читаются при старте. `verify` с `ENV=dev`, неполные или противоречивые настройки (файлы стенда в prod, общий файл сервисного и API-токена, JWKS не по HTTPS) и нечитаемые файлы — отказ старта до открытия пулов, без перехода на dev-режим. `*Assembly` реализует `server.ServiceVerifier`, `server.UserVerifier` и `client.TokenSource`; вторая цепочка аутентификации не ставится. Отказ доступа считает `finassist_grpc_denied_total`, отказы токенов — `finassist_identity_rejected_total`, пропущенные JWK — `finassist_identity_jwks_skipped_keys`. Недоступность ключей — голый `UNAVAILABLE`, а не `INVALID_TOKEN` (FIN-293).
+- Задание go-worker `identity-keys` (`Run` сборки) обновляет ключи в фоне; до первого обновления ключи загружаются лениво на первом запросе. `Close` сборки — в `App.Close` после остановки заданий.
+- `insecure-dev` — токены `dev:<имя>` без проверки, только при `ENV=dev`: это проверяют и `config.Load`, и сама сборка `app.New` (для вызовов в обход `config.Load`, например `apitest`). Это не обход проверки в stage/prod.
+
+Сервис `user` выпускает ключи сам и вместо `DialUser` передаёт `UserKeys` — локальный провайдер; эта сборка шаблона ему не подходит без замены.
 
 `NoTombstones` остаётся временной явной реализацией для шаблона. Сервис с данными пользователей обязан заменить её интеграцией `go-tombstone` в `internal/app`; вынос transport-кода не реализует эту интеграцию автоматически.
 

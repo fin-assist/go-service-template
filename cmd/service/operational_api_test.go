@@ -199,10 +199,10 @@ func TestAPICommandEmptyMigrationDeploymentServesOperationsAndStops(t *testing.T
 		t.Fatal("HTTP still served after shutdown")
 	}
 	// A failed rollout after this observed healthy baseline leaves no serving API.
-	for _, variant := range []string{"verify-not-wired", "database-unavailable", "http-port-conflict"} {
+	for _, variant := range []string{"verify-misconfigured", "database-unavailable", "http-port-conflict"} {
 		t.Run(variant, func(t *testing.T) {
 			switch variant {
-			case "verify-not-wired":
+			case "verify-misconfigured":
 				t.Setenv("ENV", "prod")
 				t.Setenv("AUTH_MODE", "verify")
 			case "database-unavailable":

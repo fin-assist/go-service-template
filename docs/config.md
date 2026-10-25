@@ -20,8 +20,18 @@
 |---|---|---|
 | `SERVICE_NAME` | — (обязательна) | имя сервиса: логи, `application_name`, токен в dev |
 | `ENV` | `prod` | `dev`, `stage` или `prod`. Reflection включён только при `dev` |
-| `AUTH_MODE` | `verify` | `verify` — проверка JWT и токенов ServiceAccount (FIN-119, пока не подключена: сервис не стартует); `insecure-dev` — токены `dev:<имя>` без проверки, только при `ENV=dev` |
-| `SERVICE_TOKEN_FILE` | — | файл с токеном ServiceAccount этого сервиса для исходящих вызовов (FIN-119) |
+| `AUTH_MODE` | `verify` | `verify` — проверка JWT пользователя и сервисных токенов через `go-identity` `NewAssembly` (FIN-323): при `ENV=prod` — токены ServiceAccount Kubernetes, при `ENV=stage` — JWT стенда на ключах из файлов; с `ENV=dev` не стартует. `insecure-dev` — токены `dev:<имя>` без проверки, только при `ENV=dev` |
+| `AUTH_USER_ISSUER` | — | `iss` access JWT, которые выпускает `user`; обязателен при `verify` |
+| `AUTH_USER_AUDIENCE` | — | `aud` access JWT, которые выпускает `user`; обязателен при `verify`. Ключи берутся из `user.GetSigningKeys` по `PEER_USER_ADDR` (обязателен при `verify`) |
+| `SERVICE_TOKEN_FILE` | — | projected-токен ServiceAccount этого сервиса с audience `finassist-internal` для исходящих вызовов; обязателен при `verify` и `ENV=prod`, отдельный файл от `AUTH_KUBERNETES_API_TOKEN_FILE` |
+| `AUTH_KUBERNETES_ISSUER` | `https://kubernetes.default.svc.cluster.local` | `iss` токенов ServiceAccount (`ENV=prod`); сверить с настройкой кластера |
+| `AUTH_KUBERNETES_JWKS_URL` | `https://kubernetes.default.svc/openid/v1/jwks` | HTTPS-адрес ключей ServiceAccount без credentials, query и fragment (`ENV=prod`) |
+| `AUTH_KUBERNETES_CA_FILE` | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | единственный CA, которому доверяет запрос JWKS (`ENV=prod`); прокси из окружения не используется |
+| `AUTH_KUBERNETES_API_TOKEN_FILE` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | токен с audience API-сервера для чтения JWKS (`ENV=prod`); не исходящий токен сервиса |
+| `AUTH_KUBERNETES_NAMESPACE` | `finassist` | namespace доверенных ServiceAccount (`ENV=prod`) |
+| `AUTH_STAGE_ISSUER` | — | общий `iss` сервисных JWT стенда; обязателен при `verify` и `ENV=stage`, запрещён при `ENV=prod` |
+| `AUTH_STAGE_SIGNING_KEY_FILE` | — | PKCS#8 PEM Ed25519 ключ этого сервиса на стенде (`kid` = `sub` = `SERVICE_NAME`); читается при старте, ротация — перезапуском |
+| `AUTH_STAGE_PUBLIC_KEYS_FILE` | — | JWKS публичных ключей сервисов стенда: только OKP Ed25519, `kid` — имя сервиса; читается при старте |
 | `DB_PRIMARY_DSN` / `_FILE` | — (обязательна) | DSN primary (`-rw`) |
 | `DB_REPLICA_DSN` / `_FILE` | — | DSN реплик (`-ro`); пусто — чтение тоже с primary. На стенде оба указывают на один PostgreSQL |
 | `DB_MAX_CONNS` | `10` | размер каждого пула |

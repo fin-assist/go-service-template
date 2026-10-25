@@ -6,7 +6,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -38,7 +37,12 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheu
 }
 
 func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error)) (*App, error) {
-	services, users, tokens, err := identity(cfg)
+	// Client metrics come first: the identity's own connection to user is counted too.
+	clients, err := client.NewMetrics(reg)
+	if err != nil {
+		return nil, err
+	}
+	id, err := identity(cfg, reg, clients, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -47,25 +51,25 @@ func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prom
 		MaxConns: cfg.DB.MaxConns, AppName: cfg.Service,
 	})
 	if err != nil {
+		id.close()
 		return nil, err
 	}
-	a := &App{Cfg: cfg, Log: log, DB: db, Tokens: tokens, closers: []func(){db.Close}}
+	// Close runs after the jobs have stopped (cmd/service), so the identity key
+	// refresh job never outlives its connection to user.
+	a := &App{Cfg: cfg, Log: log, DB: db, Clients: clients, Tokens: id.tokens, Jobs: id.jobs, closers: []func(){id.close, db.Close}}
 	fail := func(err error) (*App, error) { a.Close(); return nil, err }
 
 	if a.GRPC, err = server.New(server.Options{MaxRecvMsgSize: cfg.GRPC.MaxRecvMsgSize, Reflection: cfg.GRPC.Reflection}, server.Deps{
 		Logger: log, Metrics: reg, Policy: AccessPolicy(),
-		Services: services, Users: users, Tombstones: tombstones(db),
+		Services: id.services, Users: id.users, Tombstones: tombstones(db),
 	}); err != nil {
-		return fail(err)
-	}
-	if a.Clients, err = client.NewMetrics(reg); err != nil {
 		return fail(err)
 	}
 	jobs, closeWired, err := wire(a)
 	if err != nil {
 		return fail(err)
 	}
-	a.Jobs = jobs
+	a.Jobs = append(a.Jobs, jobs...)
 	a.closers = append(a.closers, closeWired)
 	return a, nil
 }
@@ -76,24 +80,6 @@ func (a *App) Close() {
 		a.closers[i]()
 	}
 	a.closers = nil
-}
-
-// identity returns the verifiers of incoming calls and the token of outgoing ones.
-func identity(cfg config.Config) (server.ServiceVerifier, server.UserVerifier, client.TokenSource, error) {
-	switch cfg.Auth.Mode {
-	case config.AuthInsecureDev:
-		// New is exported and callable without config.Load, so the dev-only gate is
-		// enforced here as well: unverified identities never outside ENV=dev.
-		if cfg.Env != config.EnvDev {
-			return nil, nil, nil, errors.New("AUTH_MODE=insecure-dev is allowed only with ENV=dev")
-		}
-		return server.DevServiceVerifier{}, server.DevUserVerifier{}, client.DevToken(cfg.Service), nil
-	default:
-		// TODO(FIN-119): JWT (Ed25519, GetSigningKeys) and ServiceAccount tokens (JWKS of
-		// the API server); the outgoing token from client.FileToken{Path: SERVICE_TOKEN_FILE}.
-		// Until then the service does not start outside dev rather than trust anyone.
-		return nil, nil, nil, errors.New("AUTH_MODE=verify needs the identity library (FIN-119); use AUTH_MODE=insecure-dev with ENV=dev")
-	}
 }
 
 // tombstones returns the check of deleted users.
