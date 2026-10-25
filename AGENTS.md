@@ -21,7 +21,8 @@ updates them in the same PR. A service made from the template rewrites the first
   never defines its own `.proto`, error codes or REST fields: a change goes to `contracts` first (its own FIN issue
   and PR), then the service bumps the module.
 - Shared code: Go libraries made from `fin-assist/go-library-template` (FIN-118) — `go-identity`, `go-idempotency`,
-  `go-outbox`, `go-tombstone`, `go-postgres` (FIN-195). The service imports them at tagged versions and wires them in `internal/app` by the
+  `go-outbox`, `go-tombstone`, `go-postgres` (FIN-195/FIN-253), `go-grpc`, `go-migrate`, `go-worker` (FIN-246).
+  The service imports them at tagged versions and wires them in `internal/app` by the
   «Внедрение» section of their README; versions and compatibility — `docs/releasing.md` of the library template.
   Code that more than one service needs goes into a library (its own FIN issue), not into a copy here.
 - Architecture, MVP scope, product decisions: Confluence PF (https://finassist.atlassian.net/wiki/spaces/PF),
@@ -42,15 +43,16 @@ updates them in the same PR. A service made from the template rewrites the first
 | The whole service in-process for API tests | `internal/app/apitest/` |
 | Entities and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/` |
-| gRPC server, interceptors, access table types, identity and tombstone interfaces | `internal/adapter/grpc/server/`; rules — `docs/server.md` |
+| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.1.0; service wiring — `internal/app/`, `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
-| Pools, go-postgres transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
-| Migration runner and the PostgreSQL for tests | `internal/adapter/postgres/migrate/`, `migratetest/` |
+| Primary/replica routing, go-postgres.OpenPools/transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
+| Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.1.0; ordered service sources — `internal/app/` |
+| Test PostgreSQL server selection (not runtime business code) | `internal/testdb/`; public migratetest creates/checks databases; counted in every profile |
 | SQL migrations (embedded) | `migrations/`; rules — `docs/migrations.md` |
-| Clients of other services, service token source | `internal/adapter/client/` |
-| Background jobs | `internal/worker/` |
+| Application-specific peer adapters, when needed | `internal/adapter/client/<peer>/`; shared dialing/token contracts — go-grpc/client |
+| Shared job lifecycle; application jobs when needed | `github.com/fin-assist/go-worker` v0.1.0; `internal/worker/<job>/` |
 | Configuration: every variable with its default and description | `internal/config/vars.go` (`Vars`); generated tables — `docs/config.md` |
-| Request-scoped values (request ID, caller, user, bank-bff hints) | `internal/reqctx/` |
+| Request-scoped values (request ID, caller, user, bank-bff hints) | `github.com/fin-assist/go-grpc/reqctx` |
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
 | Image, local run, stand | `Dockerfile`, `compose.yaml`, `Makefile`, `deploy/systemd/` |
 | CI, lint | `.github/workflows/ci.yml`, `.golangci.yml`, `.squawk.toml` |
@@ -58,10 +60,22 @@ updates them in the same PR. A service made from the template rewrites the first
 | Dependency updates | `renovate.json` |
 | PR review by Claude | `.github/workflows/claude.yml` |
 
+FIN-246 keeps only service routing/assembly adapters locally. Do not copy library internals back into the service
+or add dummy RPCs, SQL or jobs. Preserve fail-closed verify identity and the explicit NoTombstones replacement
+requirement. Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
+are not a substitute for existing service behaviour. go-postgres is pinned at v0.2.0. Paths with <feature>, <peer>
+and <job> describe future application code only, not actual empty directories in the template.
+
+The service test entrypoint selects a PostgreSQL18 admin DSN (external server or testcontainer) in internal/testdb.
+Public migratetest.DSN(t, adminDSN) creates and cleans its own isolated database;
+migratetest.CheckUpDownUp(t, dsn, source) uses the supplied database without owning/dropping it.
+Keep cleanup and cancellation bounded. internal/testdb and internal/app/apitest ordinary .go files remain counted
+in all three service profiles; there is no service pgtest exclusion. See docs/testing.md.
+
 ### Stack
 
 Versions are in `go.mod` (Go toolchain included), `.github/workflows/ci.yml` and `Makefile` (golangci-lint), `compose.yaml`
-and `migratetest.DefaultImage` (PostgreSQL). Main pieces: grpc-go, protobuf, protovalidate, pgx v5, golang-migrate,
+and `internal/testdb.DefaultImage` (PostgreSQL). Main pieces: grpc-go, protobuf, protovalidate, pgx v5, golang-migrate,
 prometheus client_golang, testcontainers-go, squawk; the fin-assist libraries above. A new dependency is named in
 the PR with why it is needed.
 
@@ -123,7 +137,7 @@ Priorities when they pull apart, in this order:
   code through `bare()` in the server package. A new client reaction needs a new code in `contracts` first. A
   handler may return a `finerr` error wrapped with `%w` or any other error: the interceptor sends the caller the
   unwrapped status or a bare `INTERNAL` (`CANCELLED` / `DEADLINE_EXCEEDED` for context errors) and logs the
-  original, so no text of a wrapped error leaves the process (`docs/server.md`, step 10).
+  original, so no text of a wrapped error leaves the process (the tagged `go-grpc/server` contract linked from `docs/server.md`).
 - Identity: the user of a user call is `reqctx.UserID(ctx)` (the verified `sub`), never a request field; a system
   call takes `user_id` from the request. Every new method gets its row in `AccessPolicy()`, copied from
   grpc-api.md 3.3; the server does not start without it.
@@ -187,8 +201,8 @@ Every change comes with its automated tests in the same PR — not in a follow-u
   mappers, validation, config, helpers, interceptors) has unit tests in its package: no database, no network, fakes
   of the interfaces the code declares; the main path and every branch and error the code handles.
 - **Integration tests — all new functionality.** Every new or changed behaviour is tested against its real
-  dependencies: repositories, migrations, transactions and locks against PostgreSQL (`migratetest.DSN`), not mocks of
-  pgx — the SQL itself is what is tested; clients of other services against a fake gRPC server on bufconn
+  dependencies: repositories, migrations, transactions and locks against PostgreSQL (service internal/testdb
+  selecting PG18, public migratetest.DSN(t, adminDSN) creating a database), not mocks of pgx — the SQL itself is what is tested; clients of other services against a fake gRPC server on bufconn
   (retries, deadlines, metadata); jobs and the outbox through a real run. Every migration passes up → down → up
   (`migrations/migrations_test.go`).
 - **API tests — all new functionality.** Every new or changed RPC is tested through the service's API as a caller

@@ -33,19 +33,19 @@ internal/app/                      assembly: identity, pools, server, wire() (ha
 internal/app/apitest/              the whole service in-process for API tests
 internal/domain/                   entities and invariants, no infrastructure imports
 internal/<feature>/                usecases; interfaces of repositories and clients they need
-internal/adapter/grpc/server/      gRPC server, interceptors, access table types, identity interfaces
 internal/adapter/grpc/<feature>/   gRPC handlers: messages <-> usecases
-internal/adapter/postgres/         pools, go-postgres adapter, repositories on pgx
-internal/adapter/postgres/migrate/ migration runner (migratetest: PostgreSQL for tests)
-internal/adapter/client/           clients of other services, service token source
-internal/worker/                   background jobs: outbox dispatcher, scheduled jobs
+internal/adapter/postgres/         primary/replica routing, go-postgres transaction adapter, repositories
+internal/adapter/client/<peer>/    service-specific client adapters, when needed
+internal/worker/<job>/             application jobs, when needed
 internal/config/                   configuration from the environment
-internal/reqctx/                   request-scoped values: request ID, caller, user, hints
+internal/testdb/                   test-only PostgreSQL server selection; public migratetest harness
 internal/logx/                     slog with values from the context
 internal/ops/                      /metrics, /healthz, /readyz, readiness
 migrations/                        SQL migrations, embedded into the binary
 deploy/systemd/                    example unit for the stand
 ```
+
+Пути с `<feature>`, `<peer>` и `<job>` обозначают место будущего прикладного кода, а не созданные пустые каталоги: шаблон не содержит бизнес-обработчиков, peer adapters или jobs. Общая инфраструктура импортируется из библиотек ниже.
 
 Раскладка — по руководству go.dev «Organizing a Go module» (серверный проект), слои и интерфейсы на стороне потребителя — по go-clean-arch v4: сценарий в `internal/<feature>` объявляет интерфейсы нужных ему репозиториев и клиентов, адаптеры их реализуют, связывает всё `wire()`.
 
@@ -64,7 +64,9 @@ make run
 
 ## Библиотеки и обновления
 
-Транзакции и распознавание нарушений ограничений — [`go-postgres`](https://github.com/fin-assist/go-postgres) ([FIN-195](https://finassist.youtrack.cloud/issue/FIN-195)): шаблон сохраняет настройку пулов и выбор primary/replica, а общий механизм вызывает из библиотеки. Соответствие ограничений доменным ошибкам задаёт адаптер конкретной операции. Проверяемый пример с ошибкой COMMIT и `finerr.NOT_FOUND` — `internal/adapter/postgres/mapping_example_test.go`; правила — [docs/migrations.md](docs/migrations.md).
+FIN-246: общие механизмы подключены как опубликованные модули: [`go-grpc v0.1.0`](https://github.com/fin-assist/go-grpc/tree/v0.1.0) (`server`, `client`, `reqctx`), [`go-migrate v0.1.0`](https://github.com/fin-assist/go-migrate/tree/v0.1.0), [`go-worker v0.1.0`](https://github.com/fin-assist/go-worker/tree/v0.1.0) и [`go-postgres v0.2.0`](https://github.com/fin-assist/go-postgres/tree/v0.2.0). Публичные контракты и примеры — в README библиотек. Сервис владеет конфигурацией, access policy, identity/tombstone wiring, регистрацией обработчиков, источниками SQL и порядком запуска/остановки. Прикладные peer adapters и jobs добавляются вместе с реальными сценариями.
+
+Транзакции и распознавание нарушений ограничений — [`go-postgres`](https://github.com/fin-assist/go-postgres) ([FIN-195](https://finassist.youtrack.cloud/issue/FIN-195)): шаблон передаёт настройки в `go-postgres.OpenPools`, а локальный `postgres.DB` сохраняет выбор primary/replica и тонкий адаптер менеджера транзакций. Соответствие ограничений доменным ошибкам задаёт адаптер конкретной операции. Проверяемый пример с ошибкой COMMIT и `finerr.NOT_FOUND` — `internal/adapter/postgres/mapping_example_test.go`; правила — [docs/migrations.md](docs/migrations.md).
 
 Общий код сервисов — отдельные Go-библиотеки из шаблона [`fin-assist/go-library-template`](https://github.com/fin-assist/go-library-template) ([FIN-118](https://finassist.youtrack.cloud/issue/FIN-118)): [`go-identity`](https://github.com/fin-assist/go-identity) (FIN-119), [`go-idempotency`](https://github.com/fin-assist/go-idempotency) (FIN-78), [`go-outbox`](https://github.com/fin-assist/go-outbox) (FIN-109), [`go-tombstone`](https://github.com/fin-assist/go-tombstone) (FIN-110).
 
@@ -99,7 +101,7 @@ make lint
 - **Integration** — `TestIntegration…`: настоящие PostgreSQL/миграции/транзакции, транспортные клиенты на тестовых серверах, реальные запуски фоновых заданий.
 - **API** — `TestAPI…`: полная сборка сервиса и вызов публичного gRPC API. У шаблона это health и отказ неизвестному методу, а также настоящая CLI assembly с `/healthz`, `/readyz`, `/metrics`, завершением работы и отказом API после неудачного restart; бизнес-RPC шаблон не реализует.
 
-У всех трёх прогонов одинаковый `-coverpkg=./...`: весь production-код, generated-код и тестовая инфраструктура в обычных `.go` файлах учитываются одинаково. Исключений ради порога нет. Тестовые `_test.go` файлы и `testdata/` Go штатно не инструментирует. Существующие тесты распределены по фактической сборке, без удаления или подмены уровня.
+У всех трёх прогонов одинаковый `-coverpkg=./...`: весь production-код, generated-код и тестовая инфраструктура в обычных `.go` файлах учитываются одинаково. `internal/testdb` и `internal/app/apitest` остаются в знаменателе; библиотечное исключение `internal/pgtest` в сервис не переносится. Исключений ради порога нет. Тестовые `_test.go` файлы и `testdata/` Go штатно не инструментирует. Существующие тесты распределены по фактической сборке, без удаления или подмены уровня.
 
 ```bash
 # Requires Go, Bash, jq and Python 3.11+ for the script checks.
@@ -115,6 +117,6 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 
 CI сохраняет обязательный check `go`: он собирает и проверяет каждый набор, даже при недостаточном покрытии другого; итог падает при любом неуспешном наборе или пороге. Сводка и artifact `coverage` содержат `.out`, `.jsonl`, штатные `.coverage.txt`/`.report.txt` для unit/integration/API/combined. Ссылка на artifact находится в сводке CI. Права записи в PR, в том числе из fork, не нужны. Порог statements не доказывает полноту бизнес-сценариев — она проверяется отдельно на ревью.
 
-Актуальный локальный замер на Go1.26.0/PostgreSQL18: unit52.4%, integration69.7%, API46.1%, combined89.2% (1015 statements). Все три collectors и execution guards проходят без skip; все три80% критерия пока невыполнены, required CI остаётся красным. Сценарии и точные native per-file границы — [docs/testing.md](docs/testing.md). Пустой service migration source проверяется на PostgreSQL без SQL-пустышек.
+Исторический замер FIN-238 до выноса библиотек (24.10.2026, Go1.26.0/PostgreSQL18): unit52.4%, integration69.7%, API46.1%, combined89.2% (1015 statements). В том замере collectors и execution guards прошли без skip, а все три80% критерия были невыполнены. Это не результат сборки FIN-246; её актуальные числа публикует CI текущего commit. Сценарии и точные native per-file границы — [docs/testing.md](docs/testing.md). Пустой service migration source проверяется на PostgreSQL без SQL-пустышек.
 
 Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.

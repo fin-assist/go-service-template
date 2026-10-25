@@ -1,9 +1,10 @@
 package app
 
 import (
-	"github.com/fin-assist/go-service-template/internal/adapter/grpc/server"
-	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate"
-	"github.com/fin-assist/go-service-template/internal/worker"
+	"github.com/fin-assist/go-grpc/server"
+	"github.com/fin-assist/go-migrate"
+	"github.com/fin-assist/go-worker"
+
 	"github.com/fin-assist/go-service-template/migrations"
 )
 
