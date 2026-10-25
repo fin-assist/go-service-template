@@ -80,10 +80,6 @@ class SuiteSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.make_module(root)
-            (root / "fuzz_test.go").write_text(
-                'package selection\nimport "testing"\n'
-                'func FuzzUnitParse(f *testing.F) { f.Add("seed"); f.Fuzz(func(t *testing.T, s string) {}) }\n'
-            )
             (root / "parse.go").write_text(
                 'package selection\n\nfunc Parse(s string) int { return len(s) }\n'
             )
@@ -97,8 +93,12 @@ class SuiteSelectionTests(unittest.TestCase):
             self.assertEqual(status, 0, output)
             events = (root / "unit.jsonl").read_text()
             self.assertIn('"Action":"pass","Package":"example.com/selection","Test":"FuzzUnitParse"', events.replace(" ", ""))
-            self.run_make(root, "collect-integration")
-            self.assertNotIn("FuzzUnitParse", (root / "integration.jsonl").read_text())
+            status, output = self.run_make(root, "collect-integration")
+            self.assertNotEqual(status, 0, output)
+            self.assertIn("Suite must execute", output)
+            integration = (root / "integration.jsonl").read_text()
+            self.assertIn('"Package":"example.com/selection"', integration.replace(" ", ""))
+            self.assertNotIn("FuzzUnitParse", integration)
 
     def test_example_blocks_collection(self):
         with tempfile.TemporaryDirectory() as directory:

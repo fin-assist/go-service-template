@@ -17,7 +17,7 @@
 
 1. Создать репозиторий из шаблона (GitHub → «Use this template»).
 2. Заменить модуль: `go mod edit -module github.com/fin-assist/<service>` и пути импорта (`grep -rl go-service-template | xargs sed -i 's#fin-assist/go-service-template#fin-assist/<service>#g'`).
-3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service`, имя в `compose.yaml`, `Makefile` (`BIN`, `build`), `Dockerfile` (путь сборки и бинаря) и `.github/workflows/ci.yml` (job `image`: тег образа).
+3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service`, имя в `compose.yaml`, `Makefile` (`BIN`, `build`, тег в `image`, `SERVICE_NAME` в `run`; DSN локального PostgreSQL — вместе с `compose.yaml`), `Dockerfile` (путь сборки и бинаря) и `.github/workflows/ci.yml` (job `image`: тег образа).
 4. Заполнить `AccessPolicy()` строками своего сервиса из таблицы grpc-api.md 3.3 и зарегистрировать обработчики в `wire()` (`internal/app/wire.go`).
 5. Подключить проверку идентичности: шаблон пока не стартует с `AUTH_MODE=verify` (`TODO(FIN-119)` в `internal/app/app.go`, задача подключения в шаблоне — [FIN-273](https://finassist.youtrack.cloud/issue/FIN-273)). До неё — по разделу «Внедрение» README [`go-identity`](https://github.com/fin-assist/go-identity); без этого сервис работает только с `ENV=dev`.
 6. Сервис с данными пользователей — заменить `NoTombstones` на библиотеку `go-tombstone` (FIN-110); остальные библиотеки — по «Библиотеки и обновления» ниже.
