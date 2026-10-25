@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- FIN-323: `AUTH_MODE=verify` собирается через `identity.NewAssembly` из `go-identity` v0.2.0: при `ENV=prod` — токены ServiceAccount Kubernetes, при `ENV=stage` — JWT стенда на ключах из файлов, ключи пользователя — из `user.GetSigningKeys` по `PEER_USER_ADDR`; задание `identity-keys` обновляет ключи, `Close` — после остановки заданий. Новые переменные `AUTH_USER_ISSUER`, `AUTH_USER_AUDIENCE`, `AUTH_KUBERNETES_*`, `AUTH_STAGE_*`; `verify` с `ENV=dev`, неполная настройка и один файл для сервисного и API-токена (в том числе через симлинк или жёсткую ссылку) — отказ старта. Раньше `verify` всегда отказывал при старте.
+
 ### Исправлено
 
 - FIN-269: во время `SHUTDOWN_DELAY` HTTP `/readyz` отвечает 503 вместе с gRPC health `NOT_SERVING`; раньше `/readyz` до конца паузы отвечал 200.

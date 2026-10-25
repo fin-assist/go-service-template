@@ -40,6 +40,7 @@ updates them in the same PR. A service made from the template rewrites the first
 |---|---|
 | Commands `serve`, `migrate`: listeners, shutdown | `cmd/service/` (`serve.go`, `migrate.go`) |
 | Assembly: identity, pools, server; wiring of adapters, usecases and handlers (`wire()`), the access table (`AccessPolicy()`), migration sources | `internal/app/` (`app.go`, `wire.go`) |
+| Identity: `AUTH_MODE=verify` through go-identity v0.2.0 `NewAssembly` (prod Kubernetes, stage file keys, user keys from `GetSigningKeys`), job `identity-keys`, dev-only `insecure-dev` | `internal/app/identity.go`, `internal/config/identity.go`; rules — `docs/server.md` |
 | The whole service in-process for API tests | `internal/app/apitest/` |
 | Entities and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/` |
@@ -62,7 +63,10 @@ updates them in the same PR. A service made from the template rewrites the first
 
 FIN-246 keeps only service routing/assembly adapters locally. Do not copy library internals back into the service
 or add dummy RPCs, SQL or jobs. Preserve fail-closed verify identity and the explicit NoTombstones replacement
-requirement. Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
+requirement. FIN-323: verify is one go-identity `NewAssembly`; any construction or configuration failure refuses
+the start with no fallback, `ENV=dev` never uses verify, and `App.Close` releases the assembly after jobs stop.
+Identity tests use a probe service in the real go-grpc chain only in `_test.go`; the template policy stays empty.
+Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
 are not a substitute for existing service behaviour. go-postgres is pinned at v0.2.0. Paths with <feature>, <peer>
 and <job> describe future application code only, not actual empty directories in the template.
 
