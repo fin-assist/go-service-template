@@ -42,6 +42,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = grpcLis.Close() }()
 	readiness := &ops.Readiness{}
 	return serve(ctx, cfg, log, serving{
 		grpc: a.GRPC, http: ops.Server(cfg.HTTP.Addr, ops.Handler(reg, readiness)),

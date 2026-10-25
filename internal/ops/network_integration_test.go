@@ -32,7 +32,7 @@ func TestIntegrationReadinessNetworkFailureRecoveryAndShutdown(t *testing.T) {
 	defer cancel()
 	go func() {
 		defer close(done)
-		readiness.Watch(ctx, 20*time.Millisecond, slog.New(slog.DiscardHandler), func(ctx context.Context) error {
+		readiness.Watch(ctx, 100*time.Millisecond, slog.New(slog.DiscardHandler), func(ctx context.Context) error {
 			request, err := http.NewRequestWithContext(ctx, http.MethodGet, dependency.URL, nil)
 			if err != nil {
 				return err

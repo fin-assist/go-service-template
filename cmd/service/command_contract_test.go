@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	migratetest "github.com/fin-assist/go-service-template/internal/testdb"
+	"github.com/fin-assist/go-service-template/internal/testdb"
 )
 
 func TestUnitProcessBoundaryReportsUsageAndConfigurationFailures(t *testing.T) {
@@ -36,13 +36,13 @@ func TestUnitProcessBoundaryReportsUsageAndConfigurationFailures(t *testing.T) {
 func TestAPICommandConfigurationAndUsageAreRealExitStatuses(t *testing.T) {
 	previous := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	for _, args := range [][]string{{"not-a-command"}, {"serve", "unexpected"}, {"migrate"}} {
+	for _, args := range [][]string{nil, {"not-a-command"}, {"serve", "unexpected"}, {"migrate"}} {
 		var stderr bytes.Buffer
 		if code := mainExit(args, &stderr); code != 2 || !strings.Contains(stderr.String(), "service migrate") {
 			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
 		}
 	}
-	for _, variant := range []string{"missing-primary", "invalid-env", "invalid-log", "dev-auth-in-prod", "missing-secret-file", "invalid-migration-timeout"} {
+	for _, variant := range []string{"missing-primary", "invalid-env", "invalid-log", "dev-auth-in-prod", "missing-secret-file", "invalid-migration-timeout", "missing-service", "invalid-log-format", "invalid-integer", "zero-connections", "zero-message-limit", "negative-shutdown-delay", "invalid-auth", "conflicting-secrets", "missing-migration-primary"} {
 		t.Run(variant, func(t *testing.T) {
 			for k, v := range map[string]string{"SERVICE_NAME": "service", "ENV": "dev", "AUTH_MODE": "insecure-dev", "LOG_FORMAT": "json", "LOG_LEVEL": "error", "DB_PRIMARY_DSN": "postgres://unused.invalid/db", "DB_PRIMARY_DSN_FILE": ""} {
 				t.Setenv(k, v)
@@ -60,6 +60,25 @@ func TestAPICommandConfigurationAndUsageAreRealExitStatuses(t *testing.T) {
 			case "missing-secret-file":
 				t.Setenv("DB_PRIMARY_DSN", "")
 				t.Setenv("DB_PRIMARY_DSN_FILE", filepath.Join(t.TempDir(), "missing"))
+			case "missing-service":
+				t.Setenv("SERVICE_NAME", "")
+			case "invalid-log-format":
+				t.Setenv("LOG_FORMAT", "xml")
+			case "invalid-integer":
+				t.Setenv("DB_MAX_CONNS", "many")
+			case "zero-connections":
+				t.Setenv("DB_MAX_CONNS", "0")
+			case "zero-message-limit":
+				t.Setenv("GRPC_MAX_RECV_MSG_SIZE", "0")
+			case "negative-shutdown-delay":
+				t.Setenv("SHUTDOWN_DELAY", "-1s")
+			case "invalid-auth":
+				t.Setenv("AUTH_MODE", "unrecognized")
+			case "conflicting-secrets":
+				t.Setenv("DB_PRIMARY_DSN_FILE", filepath.Join(t.TempDir(), "unused-credential"))
+			case "missing-migration-primary":
+				args = []string{"migrate", "up"}
+				t.Setenv("DB_PRIMARY_DSN", "")
 			case "invalid-migration-timeout":
 				args = []string{"migrate", "up"}
 				t.Setenv("MIGRATE_LOCK_TIMEOUT", "later")
@@ -73,7 +92,7 @@ func TestAPICommandConfigurationAndUsageAreRealExitStatuses(t *testing.T) {
 }
 
 func TestIntegrationCommandEmptySourceMigrationsAndVersions(t *testing.T) {
-	dsn := migratetest.DSN(t)
+	dsn := testdb.DSN(t)
 	t.Setenv("DB_PRIMARY_DSN", dsn)
 	t.Setenv("DB_PRIMARY_DSN_FILE", "")
 	if err := runMigrate(t.Context(), []string{"up"}, &bytes.Buffer{}); err != nil {
@@ -96,12 +115,18 @@ func TestIntegrationCommandEmptySourceMigrationsAndVersions(t *testing.T) {
 func TestAPIProcessMigrationCommandsUsePublishedRunnerAndReturnSuccess(t *testing.T) {
 	previous := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	t.Setenv("DB_PRIMARY_DSN", migratetest.DSN(t))
+	t.Setenv("DB_PRIMARY_DSN", testdb.DSN(t))
 	t.Setenv("DB_PRIMARY_DSN_FILE", "")
 	for _, args := range [][]string{{"migrate", "up"}, {"migrate", "version"}} {
 		var stderr bytes.Buffer
 		if code := mainExit(args, &stderr); code != 0 {
 			t.Fatalf("deployment command %v code=%d stderr=%q", args, code, stderr.String())
+		}
+	}
+	for _, args := range [][]string{{"migrate", "sideways"}, {"migrate", "up", "extra"}, {"migrate", "version", "extra"}, {"migrate", "down", "service"}, {"migrate", "force", "service", "invalid"}} {
+		var stderr bytes.Buffer
+		if code := mainExit(args, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage:") {
+			t.Fatalf("invalid usage %v code=%d stderr=%q", args, code, stderr.String())
 		}
 	}
 	for _, args := range [][]string{{"migrate", "down", "service", "1"}, {"migrate", "force", "service", "0"}, {"migrate", "force", "service", "-2"}, {"migrate", "down", "service", "0"}, {"migrate", "down", "unknown", "1"}} {
@@ -120,20 +145,19 @@ func TestUnitServeConfigErrorsNeverStartAssembly(t *testing.T) {
 	}
 }
 func TestAPICommandMigrateReadsDSNCredentialFile(t *testing.T) {
-	dsn := migratetest.DSN(t)
+	dsn := testdb.DSN(t)
 	path := filepath.Join(t.TempDir(), "primary-dsn")
 	if err := os.WriteFile(path, []byte(dsn), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DB_PRIMARY_DSN", "")
 	t.Setenv("DB_PRIMARY_DSN_FILE", path)
-	var out bytes.Buffer
-	if err := runMigrate(t.Context(), []string{"up"}, &out); err != nil {
+	if err := run(t.Context(), []string{"migrate", "up"}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := runMigrate(ctx, []string{"version"}, &out); err == nil {
+	if err := run(ctx, []string{"migrate", "version"}); !errors.Is(err, context.Canceled) {
 		t.Fatal("cancelled deployment read ignored cancellation")
 	}
 }

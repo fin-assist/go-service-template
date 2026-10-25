@@ -137,7 +137,7 @@ Priorities when they pull apart, in this order:
   code through `bare()` in the server package. A new client reaction needs a new code in `contracts` first. A
   handler may return a `finerr` error wrapped with `%w` or any other error: the interceptor sends the caller the
   unwrapped status or a bare `INTERNAL` (`CANCELLED` / `DEADLINE_EXCEEDED` for context errors) and logs the
-  original, so no text of a wrapped error leaves the process (`docs/server.md`, step 10).
+  original, so no text of a wrapped error leaves the process (the tagged `go-grpc/server` contract linked from `docs/server.md`).
 - Identity: the user of a user call is `reqctx.UserID(ctx)` (the verified `sub`), never a request field; a system
   call takes `user_id` from the request. Every new method gets its row in `AccessPolicy()`, copied from
   grpc-api.md 3.3; the server does not start without it.

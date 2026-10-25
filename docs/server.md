@@ -18,7 +18,7 @@
 
 Общий dial, service token и request metadata — `github.com/fin-assist/go-grpc/client`. Адреса peers, retry-списки безопасных методов, таймауты и token source выбирает сервис. Прикладной адаптер конкретного peer появляется в `internal/adapter/client/<peer>/` только вместе с usecase; транспортную реализацию библиотеки не копируют.
 
-Общий запуск и периодичность — `github.com/fin-assist/go-worker`. Сервис явно передаёт logger, clock и restart delay, сохраняя прежний интервал перезапуска 5 с; нулевой default библиотеки не заменяет эту настройку. Реальные jobs размещаются в `internal/worker/<job>/`. Задания запускаются в каждом поде: единственность эффекта обеспечивает прикладная блокировка или `FOR UPDATE SKIP LOCKED`, а не сам runner.
+Общий запуск и периодичность — `github.com/fin-assist/go-worker`. Сервис явно передаёт logger и clock; нулевой RestartDelay использует документированный default go-worker v0.1.0 — прежний интервал перезапуска 5 с. Реальные jobs размещаются в `internal/worker/<job>/`. Задания запускаются в каждом поде: единственность эффекта обеспечивает прикладная блокировка или `FOR UPDATE SKIP LOCKED`, а не сам runner.
 
 ## PostgreSQL и lifecycle
 

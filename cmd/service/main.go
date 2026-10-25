@@ -33,7 +33,7 @@ func mainExit(args []string, stderr io.Writer) int {
 	if err := run(ctx, args); err != nil {
 		var usage usageError
 		if errors.As(err, &usage) {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 2
 		}
 		logger.Error("failed", "error", err)

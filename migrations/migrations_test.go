@@ -6,8 +6,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate"
-	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate/migratetest"
+	"github.com/fin-assist/go-migrate"
+	"github.com/fin-assist/go-migrate/migratetest"
+
+	"github.com/fin-assist/go-service-template/internal/testdb"
 	"github.com/fin-assist/go-service-template/migrations"
 )
 
@@ -20,7 +22,7 @@ func TestIntegrationUpDownUp(t *testing.T) {
 	if !hasMigrations(t) {
 		// A fresh template is a valid empty source, not an unexecuted test.
 		// PostgreSQL still validates runner serialization and metadata handling.
-		dsn := migratetest.DSN(t)
+		dsn := testdb.DSN(t)
 		cfg := migrate.DefaultConfig(dsn)
 		cfg.Logger = slog.New(slog.DiscardHandler)
 		for range 2 {
@@ -50,7 +52,7 @@ func TestIntegrationUpDownUp(t *testing.T) {
 		}
 		return
 	}
-	migratetest.CheckUpDownUp(t, src)
+	migratetest.CheckUpDownUp(t, testdb.DSN(t), src)
 }
 
 func hasMigrations(t *testing.T) bool {

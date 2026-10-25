@@ -10,13 +10,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	migratetest "github.com/fin-assist/go-service-template/internal/testdb"
+	"github.com/fin-assist/go-service-template/internal/testdb"
 )
 
 func TestAPIProcessBindFailureClosesApplicationPoolsAndNeverStartsHTTP(t *testing.T) {
 	previous := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	dsn := migratetest.DSN(t)
+	dsn := testdb.DSN(t)
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestAPIProcessBindFailureClosesApplicationPoolsAndNeverStartsHTTP(t *testin
 	}
 	address := httpAddress.Addr().String()
 	_ = httpAddress.Close()
-	for key, value := range map[string]string{"SERVICE_NAME": "cli-bind-failure", "ENV": "dev", "AUTH_MODE": "insecure-dev", "DB_PRIMARY_DSN": dsn, "DB_PRIMARY_DSN_FILE": "", "GRPC_ADDR": occupied.Addr().String(), "HTTP_ADDR": address, "SHUTDOWN_DELAY": "0s", "SHUTDOWN_TIMEOUT": "1s"} {
+	for key, value := range map[string]string{"LOG_FORMAT": "text", "SERVICE_NAME": "cli-bind-failure", "ENV": "dev", "AUTH_MODE": "insecure-dev", "DB_PRIMARY_DSN": dsn, "DB_PRIMARY_DSN_FILE": "", "GRPC_ADDR": occupied.Addr().String(), "HTTP_ADDR": address, "SHUTDOWN_DELAY": "0s", "SHUTDOWN_TIMEOUT": "1s"} {
 		t.Setenv(key, value)
 	}
 	var stderr bytes.Buffer
