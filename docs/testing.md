@@ -16,18 +16,20 @@ API-тест не добавляет тестовые RPC или строки ac
 
 `internal/testdb` и `internal/app/apitest` не являются runtime business logic, но их обычные `.go` входят во все три профиля `-coverpkg=./...`. Никакое библиотечное исключение `internal/pgtest` не переносится в сервис. Unit не обращается к БД/сети; классификация сценариев и guards остаются прежними. Актуальные native проценты FIN-246 следует читать из artifact текущего CI; таблица ниже сохранена только как историческое evidence.
 
-## Результат FIN-246 на полном production-знаменателе
+## Локальный результат FIN-246 на целевом Go1.26.0
 
-Предварительный локальный прогон, Go1.27.1/darwin-amd64 и PostgreSQL18, `-race -count=1 -timeout=8m`:
+Go1.26.0/darwin-amd64 и PostgreSQL18 из TEST_DATABASE_URL, `-race -count=1 -timeout=8m`:
 
 | Набор | Native statements | Порог80 |
 |---|---|---|
-| Unit |81.7% (344/421)|PASS|
-| Integration |81.9% (345/421)|PASS|
-| API |80.3% (338/421)|PASS|
-| Combined |95.0% (400/421)|Только информация|
+| Unit |80.4% (315/392)|PASS|
+| Integration |83.2% (326/392)|PASS|
+| API |78.8% (309/392)|FAIL локально|
+| Combined |94.6% (371/392)|Только информация|
 
-Каждый suite действительно выполнен без skipped/failed Test; структуры блоков всех трёх профилей совпадают. Это результат штатного go-test-coverage v2.20.1, а не ручного расчёта. Отдельный повтор на точном Go1.26.0 и CI на Linux проверяют целевой compiler и сохраняют свои отчёты.
+Каждый suite действительно выполнен без skipped/failed Test; все три профиля имеют один production-знаменатель. Это штатный go-test-coverage v2.20.1, а не ручной расчёт. Analyzer требует более новую версию Go и запускается отдельно с GOTOOLCHAIN=auto; компилятор тестов закреплён GOTOOLCHAIN=go1.26.0.
+
+При локальном TEST_DATABASE_URL контейнерная ветка обычного internal/testdb не исполняется, но остаётся в знаменателе всех профилей. CI на Linux использует настоящий Docker/PostgreSQL18 и должен отдельно подтвердить все три total80. До зелёного required go достижение трёх порогов не считается доказанным. Предварительный прогон случайно выбранным Go1.27.1 дал другой знаменатель421 и не заменяет целевой прогон392.
 
 Содержательные сценарии FIN-246: ошибки/порядок сборки и cleanup пулов при конфликте метрик; owned/foreign transactions и read-primary; CLI usage/configuration/exit status, empty-source migration deployment, drain/shutdown/jobs на unit-фейках; integration файлов конфигурации/логов, HTTP readiness и реальных PostgreSQL транзакций. API вызывает настоящую CLI assembly, проверяет health/reflection/operational HTTP, отказ отсутствующим бизнес-RPC, закрытие при bind failure и переход readiness/health при запрете PostgreSQL-подключений и восстановлении. Задания, SQL и RPC для бизнес-сценариев не добавлены. Unit стадии API harness проверяют IO через маленькие consumer-интерфейсы без сети и БД; integration подтверждает реальную изоляцию БД, конфигураций и очистку ресурсов.
 
