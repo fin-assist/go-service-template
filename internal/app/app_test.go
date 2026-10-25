@@ -28,7 +28,7 @@ func TestUnitInsecureDevRefusedOutsideDevWithoutConfigLoad(t *testing.T) {
 			a, err := assemble(t.Context(), cfg, slog.New(slog.DiscardHandler), prometheus.NewRegistry(), func(context.Context, postgres.Options) (*postgres.DB, error) {
 				opened = true
 				return nil, errors.New("must not open")
-			})
+			}, productionIdentity)
 			if a != nil || err == nil || opened {
 				t.Fatalf("assembly in %q: app=%v opened=%v err=%v", env, a != nil, opened, err)
 			}

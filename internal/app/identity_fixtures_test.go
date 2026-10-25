@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -63,6 +66,34 @@ func signJWT(t *testing.T, key ed25519.PrivateKey, kid string, claims map[string
 	}
 	data := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(body)
 	return data + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, []byte(data)))
+}
+
+// forgeJWT builds a token with an arbitrary header: alg none or an HMAC keyed with a
+// public key, the classic algorithm substitutions.
+func forgeJWT(t *testing.T, header map[string]string, claims map[string]any, sign func([]byte) []byte) string {
+	t.Helper()
+	h, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(body)
+	return data + "." + base64.RawURLEncoding.EncodeToString(sign([]byte(data)))
+}
+
+func noneJWT(t *testing.T, kid string, claims map[string]any) string {
+	return forgeJWT(t, map[string]string{"alg": "none", "typ": "JWT", "kid": kid}, claims, func([]byte) []byte { return nil })
+}
+
+func hs256WithPublicKey(t *testing.T, public ed25519.PublicKey, kid string, claims map[string]any) string {
+	return forgeJWT(t, map[string]string{"alg": "HS256", "typ": "JWT", "kid": kid}, claims, func(data []byte) []byte {
+		mac := hmac.New(sha256.New, public)
+		mac.Write(data)
+		return mac.Sum(nil)
+	})
 }
 
 func jwks(t *testing.T, keys map[string]ed25519.PublicKey) string {
@@ -154,9 +185,57 @@ func serveBufconn(t *testing.T, serve func(net.Listener) error, stop func()) fun
 
 func startUserPeer(t *testing.T, peer *userPeer) []grpc.DialOption {
 	t.Helper()
+	opts, _ := startTrackedUserPeer(t, peer)
+	return opts
+}
+
+// connTracker counts the client connections to the user peer and how many of them
+// the client closed, so a test can prove the identity released its connection.
+type connTracker struct {
+	opened, closed atomic.Int32
+}
+
+type trackedConn struct {
+	net.Conn
+	once    sync.Once
+	tracker *connTracker
+}
+
+func (c *trackedConn) Close() error {
+	c.once.Do(func() { c.tracker.closed.Add(1) })
+	return c.Conn.Close()
+}
+
+// allClosed waits until every opened connection is closed; false at the deadline.
+func (c *connTracker) allClosed(ctx context.Context) bool {
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if opened := c.opened.Load(); opened > 0 && c.closed.Load() == opened {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
+func startTrackedUserPeer(t *testing.T, peer *userPeer) ([]grpc.DialOption, *connTracker) {
+	t.Helper()
 	srv := grpc.NewServer()
 	userv1.RegisterUserInternalServiceServer(srv, peer)
-	return []grpc.DialOption{grpc.WithContextDialer(serveBufconn(t, srv.Serve, srv.Stop))}
+	dial := serveBufconn(t, srv.Serve, srv.Stop)
+	tracker := &connTracker{}
+	return []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+		conn, err := dial(ctx, addr)
+		if err != nil {
+			return nil, err
+		}
+		tracker.opened.Add(1)
+		return &trackedConn{Conn: conn, tracker: tracker}, nil
+	})}, tracker
 }
 
 // probe records which verified identities reached a handler.

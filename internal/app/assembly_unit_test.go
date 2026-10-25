@@ -28,7 +28,7 @@ func TestUnitAssemblyPassesPoolConfigurationAndKeepsTemplateEmpty(t *testing.T) 
 			t.Fatalf("pool configuration was not passed through: %+v", opts)
 		}
 		return db, nil
-	})
+	}, productionIdentity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestUnitAssemblyRefusesIdentityBeforeOpeningDatabase(t *testing.T) {
 		slog.New(slog.DiscardHandler), prometheus.NewRegistry(), func(context.Context, postgres.Options) (*postgres.DB, error) {
 			opened = true
 			return &postgres.DB{}, nil
-		})
+		}, productionIdentity)
 	if err == nil || a != nil || opened {
 		t.Fatal("unverified assembly opened a database")
 	}
@@ -67,7 +67,7 @@ func TestUnitAssemblyPropagatesPoolFailureAndRefusesDuplicateMetrics(t *testing.
 	boom := errors.New("pool failed")
 	a, err := assemble(t.Context(), cfg, log, prometheus.NewRegistry(), func(context.Context, postgres.Options) (*postgres.DB, error) {
 		return nil, boom
-	})
+	}, productionIdentity)
 	if a != nil || !errors.Is(err, boom) {
 		t.Fatalf("pool failure: app=%v err=%v", a, err)
 	}
@@ -77,7 +77,7 @@ func TestUnitAssemblyPropagatesPoolFailureAndRefusesDuplicateMetrics(t *testing.
 			reg.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: "conflict"}))
 			a, err := assemble(t.Context(), cfg, log, reg, func(context.Context, postgres.Options) (*postgres.DB, error) {
 				return &postgres.DB{}, nil
-			})
+			}, productionIdentity)
 			if a != nil || err == nil || !strings.Contains(err.Error(), name) {
 				t.Fatalf("duplicate metrics accepted: app=%v err=%v", a, err)
 			}

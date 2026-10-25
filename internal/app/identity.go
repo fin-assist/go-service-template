@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -71,6 +72,12 @@ func identity(cfg config.Config, reg prometheus.Registerer, clients *client.Metr
 	}
 	switch cfg.Env {
 	case config.EnvProd:
+		// NewAssembly compares the two token paths lexically; a symlink of a projected
+		// volume (…/serviceaccount/..data/token) or a relative path would pass it and
+		// send the API-server token to every peer. Refuse the same file under any name.
+		if sameFile(cfg.Auth.ServiceTokenFile, kubernetesAPITokenFile(id.Kubernetes.APITokenFile)) {
+			return identityParts{}, errors.New("identity: SERVICE_TOKEN_FILE and AUTH_KUBERNETES_API_TOKEN_FILE must be separate files")
+		}
 		opts.Kubernetes = identitylib.KubernetesOptions{
 			TokenFile: cfg.Auth.ServiceTokenFile, Issuer: id.Kubernetes.Issuer, JWKSURL: id.Kubernetes.JWKSURL,
 			CAFile: id.Kubernetes.CAFile, APITokenFile: id.Kubernetes.APITokenFile, Namespace: id.Kubernetes.Namespace,
@@ -90,6 +97,28 @@ func identity(cfg config.Config, reg prometheus.Registerer, clients *client.Metr
 		jobs:  []worker.Job{{Name: identityKeysJob, Run: assembly.Run}},
 		close: func() { _ = assembly.Close() },
 	}, nil
+}
+
+// defaultKubernetesAPITokenFile is the default of go-identity KubernetesOptions.APITokenFile
+// and of AUTH_KUBERNETES_API_TOKEN_FILE; NewAssembly applies it to an empty value.
+const defaultKubernetesAPITokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // A file path, not a credential.
+
+func kubernetesAPITokenFile(path string) string {
+	if path == "" {
+		return defaultKubernetesAPITokenFile
+	}
+	return path
+}
+
+// sameFile reports whether both paths name one existing file. A missing file is not
+// the same file: the outgoing token then fails closed on its first use.
+func sameFile(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(ia, ib)
 }
 
 func stageFiles(s config.StageIdentity) identitylib.StageKeyFiles {

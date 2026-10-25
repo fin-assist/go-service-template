@@ -33,16 +33,25 @@ type App struct {
 
 // New assembles the service from cfg. Close releases what it opened.
 func New(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer) (*App, error) {
-	return assemble(ctx, cfg, log, reg, postgres.Open)
+	return assemble(ctx, cfg, log, reg, postgres.Open, productionIdentity)
 }
 
-func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error)) (*App, error) {
+// identityBuilder builds the identity of an assembly; tests substitute a builder that
+// dials user over bufconn and observes the connection.
+type identityBuilder func(config.Config, prometheus.Registerer, *client.Metrics) (identityParts, error)
+
+// productionIdentity dials user by PEER_USER_ADDR with no extra dial options.
+func productionIdentity(cfg config.Config, reg prometheus.Registerer, clients *client.Metrics) (identityParts, error) {
+	return identity(cfg, reg, clients, nil)
+}
+
+func assemble(ctx context.Context, cfg config.Config, log *slog.Logger, reg prometheus.Registerer, openDB func(context.Context, postgres.Options) (*postgres.DB, error), buildIdentity identityBuilder) (*App, error) {
 	// Client metrics come first: the identity's own connection to user is counted too.
 	clients, err := client.NewMetrics(reg)
 	if err != nil {
 		return nil, err
 	}
-	id, err := identity(cfg, reg, clients, nil)
+	id, err := buildIdentity(cfg, reg, clients)
 	if err != nil {
 		return nil, err
 	}

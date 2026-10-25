@@ -21,6 +21,7 @@ import (
 	"github.com/fin-assist/go-grpc/server"
 	identitylib "github.com/fin-assist/go-identity"
 
+	"github.com/fin-assist/go-service-template/internal/adapter/postgres"
 	"github.com/fin-assist/go-service-template/internal/config"
 )
 
@@ -48,6 +49,7 @@ type prodFixture struct {
 	clusterKey   ed25519.PrivateKey
 	peer         *userPeer
 	userDial     []grpc.DialOption
+	conns        *connTracker
 	clusterCalls func() int32
 }
 
@@ -66,8 +68,9 @@ func newProdFixture(t *testing.T, peerFails bool) prodFixture {
 				Issuer: clusterIss, JWKSURL: keys.URL, CAFile: caFile(t, keys), Namespace: "finassist",
 				APITokenFile: writeFile(t, "api-token", []byte("api-audience-token")),
 			}}}}
+	userDial, conns := startTrackedUserPeer(t, peer)
 	return prodFixture{cfg: cfg, userPrivate: userPrivate, clusterKey: clusterPrivate, peer: peer,
-		userDial: startUserPeer(t, peer), clusterCalls: served.Load}
+		userDial: userDial, conns: conns, clusterCalls: served.Load}
 }
 
 func chainDeps(reg prometheus.Registerer) server.Deps {
@@ -112,6 +115,15 @@ func TestIntegrationIdentityProdVerifiesTokensInServerChain(t *testing.T) {
 	mismatched["sub"] = "system:serviceaccount:finassist:analytics"
 	foreignAudience := userClaims("user-42", now.Add(time.Minute))
 	foreignAudience["aud"] = "another-app"
+	foreignUserIssuer := userClaims("user-42", now.Add(time.Minute))
+	foreignUserIssuer["iss"] = "https://other-user.example"
+	// The pod's default token: same issuer and key, audience of the API server.
+	apiAudience := serviceAccountClaims("finassist", "bank-bff", now.Add(time.Minute))
+	apiAudience["aud"] = "https://kubernetes.default.svc.cluster.local"
+	foreignClusterIssuer := serviceAccountClaims("finassist", "bank-bff", now.Add(time.Minute))
+	foreignClusterIssuer["iss"] = "https://other-cluster.example"
+	userPublic := f.userPrivate.Public().(ed25519.PublicKey)
+	clusterPublic := f.clusterKey.Public().(ed25519.PublicKey)
 	refusals := []struct {
 		name, service, user string
 		code                codes.Code
@@ -123,12 +135,19 @@ func TestIntegrationIdentityProdVerifiesTokensInServerChain(t *testing.T) {
 		{"foreign namespace", foreignNamespace, user, codes.Unauthenticated, ""},
 		{"subject differs from serviceaccount", signJWT(t, f.clusterKey, "cluster-key", mismatched), user, codes.Unauthenticated, ""},
 		{"user token as service token", user, user, codes.Unauthenticated, ""},
+		{"API-server audience token", signJWT(t, f.clusterKey, "cluster-key", apiAudience), user, codes.Unauthenticated, ""},
+		{"foreign cluster issuer", signJWT(t, f.clusterKey, "cluster-key", foreignClusterIssuer), user, codes.Unauthenticated, ""},
+		{"service token with alg none", noneJWT(t, "cluster-key", serviceAccountClaims("finassist", "bank-bff", now.Add(time.Minute))), user, codes.Unauthenticated, ""},
+		{"service token HS256 keyed with the public key", hs256WithPublicKey(t, clusterPublic, "cluster-key", serviceAccountClaims("finassist", "bank-bff", now.Add(time.Minute))), user, codes.Unauthenticated, ""},
 		{"foreign caller", analytics, user, codes.PermissionDenied, ""},
 		{"no user token", bff, "", codes.Unauthenticated, "INVALID_TOKEN"},
 		{"forged user token", bff, signJWT(t, forgedKey, "user-key", userClaims("user-42", now.Add(time.Minute))), codes.Unauthenticated, "INVALID_TOKEN"},
 		{"expired user token", bff, signJWT(t, f.userPrivate, "user-key", userClaims("user-42", now.Add(-time.Minute))), codes.Unauthenticated, "INVALID_TOKEN"},
 		{"foreign audience", bff, signJWT(t, f.userPrivate, "user-key", foreignAudience), codes.Unauthenticated, "INVALID_TOKEN"},
 		{"service token as user token", bff, bff, codes.Unauthenticated, "INVALID_TOKEN"},
+		{"foreign user issuer", bff, signJWT(t, f.userPrivate, "user-key", foreignUserIssuer), codes.Unauthenticated, "INVALID_TOKEN"},
+		{"user token with alg none", bff, noneJWT(t, "user-key", userClaims("user-42", now.Add(time.Minute))), codes.Unauthenticated, "INVALID_TOKEN"},
+		{"user token HS256 keyed with the public key", bff, hs256WithPublicKey(t, userPublic, "user-key", userClaims("user-42", now.Add(time.Minute))), codes.Unauthenticated, "INVALID_TOKEN"},
 		{"unknown user key", bff, signJWT(t, f.userPrivate, "rotated-away", userClaims("user-42", now.Add(time.Minute))), codes.Unauthenticated, "INVALID_TOKEN"},
 	}
 	for _, r := range refusals {
@@ -266,8 +285,8 @@ func TestIntegrationIdentityStageUsesFileKeys(t *testing.T) {
 	conn, p := startChain(t, id, chainDeps(reg))
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	stageToken := func(caller string, key ed25519.PrivateKey) string {
-		source, err := identitylib.NewStageSource("stage", identitylib.StageOptions{KeyFile: writeFile(t, caller+".pem", privateKeyPEM(t, key)), Caller: caller, Issuer: "https://stage.example", Clock: time.Now})
+	stageTokenAt := func(caller string, key ed25519.PrivateKey, issuer string, clock func() time.Time) string {
+		source, err := identitylib.NewStageSource("stage", identitylib.StageOptions{KeyFile: writeFile(t, caller+".pem", privateKeyPEM(t, key)), Caller: caller, Issuer: issuer, Clock: clock})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,6 +296,9 @@ func TestIntegrationIdentityStageUsesFileKeys(t *testing.T) {
 		}
 		return token
 	}
+	stageToken := func(caller string, key ed25519.PrivateKey) string {
+		return stageTokenAt(caller, key, "https://stage.example", time.Now)
+	}
 	user := signJWT(t, userPrivate, "user-key", userClaims("user-7", time.Now().Add(time.Minute)))
 	if err := callProfile(ctx, conn, stageToken("bank-bff", bffPrivate), user); err != nil {
 		t.Fatalf("stage bank-bff refused: %v", err)
@@ -284,6 +306,13 @@ func TestIntegrationIdentityStageUsesFileKeys(t *testing.T) {
 	_, impostor := newKey(t)
 	if code, _ := reasonOf(callProfile(ctx, conn, stageToken("bank-bff", impostor), user)); code != codes.Unauthenticated {
 		t.Fatalf("token signed by an unlisted key: %s", code)
+	}
+	past := func() time.Time { return time.Now().Add(-10 * time.Minute) }
+	if code, _ := reasonOf(callProfile(ctx, conn, stageTokenAt("bank-bff", bffPrivate, "https://stage.example", past), user)); code != codes.Unauthenticated {
+		t.Fatalf("expired stage token: %s", code)
+	}
+	if code, _ := reasonOf(callProfile(ctx, conn, stageTokenAt("bank-bff", bffPrivate, "https://other-stage.example", time.Now), user)); code != codes.Unauthenticated {
+		t.Fatalf("stage token of a foreign issuer: %s", code)
 	}
 	if code, _ := reasonOf(callProfile(ctx, conn, stageToken("template", ownPrivate), user)); code != codes.PermissionDenied {
 		t.Fatalf("listed service outside the access table: %s", code)
@@ -363,4 +392,138 @@ func TestIntegrationIdentityRefusesDuplicateMetrics(t *testing.T) {
 		second.close()
 		t.Fatal("duplicate identity metrics accepted")
 	}
+}
+
+// cloneConfig copies cfg deeply enough for a refusal to mutate it: Peers is a map.
+func cloneConfig(cfg config.Config) config.Config {
+	peers := make(map[string]string, len(cfg.Peers))
+	for k, v := range cfg.Peers {
+		peers[k] = v
+	}
+	cfg.Peers = peers
+	return cfg
+}
+
+// The refusals of the unit test, applied to bases that verifiably assemble: the
+// unchanged prod and stage configurations are accepted, and each single broken
+// condition is refused with its own error. A removed check fails here even when
+// the files are real.
+func TestIntegrationIdentityRefusesEachBrokenConditionOfAWorkingBase(t *testing.T) {
+	prod := newProdFixture(t, false)
+	ownPublic, ownPrivate := newKey(t)
+	stage := stageConfig(t, ownPrivate, map[string]ed25519.PublicKey{"template": ownPublic})
+	for name, base := range map[string]config.Config{"prod": prod.cfg, "stage": stage} {
+		t.Run("unchanged "+name+" base is accepted", func(t *testing.T) {
+			id, err := identity(cloneConfig(base), prometheus.NewRegistry(), nil, prod.userDial)
+			if err != nil {
+				t.Fatalf("valid %s base refused: %v", name, err)
+			}
+			id.close()
+		})
+	}
+	for _, r := range verifyRefusals() {
+		t.Run(r.name, func(t *testing.T) {
+			cfg := cloneConfig(prod.cfg)
+			if r.stage {
+				cfg = cloneConfig(stage)
+			}
+			r.change(&cfg)
+			reg := prometheus.NewRegistry()
+			id, err := identity(cfg, reg, nil, prod.userDial)
+			assertRefused(t, id, err, reg, r.want)
+		})
+	}
+}
+
+// The assembly owns the identity's connection to user and closes it on every path:
+// App.Close after the identity-keys job has run, and a failed assembly after the
+// connection was already established (pool failure, server failure).
+func TestIntegrationAssemblyClosesTheIdentityConnection(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	okDB := func(context.Context, postgres.Options) (*postgres.DB, error) { return &postgres.DB{}, nil }
+
+	t.Run("App.Close after the job", func(t *testing.T) {
+		f := newProdFixture(t, false)
+		build := func(cfg config.Config, reg prometheus.Registerer, clients *client.Metrics) (identityParts, error) {
+			return identity(cfg, reg, clients, f.userDial)
+		}
+		a, err := assemble(t.Context(), f.cfg, log, prometheus.NewRegistry(), okDB, build)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(a.Jobs) != 1 || a.Jobs[0].Name != identityKeysJob {
+			t.Fatalf("jobs: %+v", a.Jobs)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		runCtx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- a.Jobs[0].Run(runCtx) }()
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for calls, _ := f.peer.counts(); calls == 0; calls, _ = f.peer.counts() {
+			select {
+			case <-ctx.Done():
+				stop()
+				t.Fatal("job did not fetch user keys")
+			case <-tick.C:
+			}
+		}
+		stop()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("identity-keys job: %v", err)
+		}
+		if f.conns.opened.Load() == 0 || f.conns.closed.Load() != 0 {
+			t.Fatalf("connection to user before Close: opened=%d closed=%d", f.conns.opened.Load(), f.conns.closed.Load())
+		}
+		a.Close()
+		if !f.conns.allClosed(ctx) {
+			t.Fatalf("App.Close left the user connection open: opened=%d closed=%d", f.conns.opened.Load(), f.conns.closed.Load())
+		}
+	})
+
+	// connected builds the identity and establishes its user connection by verifying
+	// a token, so that the failure below happens with a live connection.
+	connected := func(t *testing.T, f prodFixture) identityBuilder {
+		return func(cfg config.Config, reg prometheus.Registerer, clients *client.Metrics) (identityParts, error) {
+			id, err := identity(cfg, reg, clients, f.userDial)
+			if err != nil {
+				return id, err
+			}
+			token := signJWT(t, f.userPrivate, "user-key", userClaims("user-1", time.Now().Add(time.Minute)))
+			if _, err := id.users.VerifyUser(t.Context(), token); err != nil {
+				t.Errorf("user keys not fetched: %v", err)
+			}
+			return id, nil
+		}
+	}
+	t.Run("pool failure", func(t *testing.T) {
+		f := newProdFixture(t, false)
+		boom := errors.New("pool failed")
+		a, err := assemble(t.Context(), f.cfg, log, prometheus.NewRegistry(), func(context.Context, postgres.Options) (*postgres.DB, error) {
+			return nil, boom
+		}, connected(t, f))
+		if a != nil || !errors.Is(err, boom) {
+			t.Fatalf("pool failure: app=%v err=%v", a != nil, err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		if !f.conns.allClosed(ctx) {
+			t.Fatalf("pool failure left the user connection open: opened=%d closed=%d", f.conns.opened.Load(), f.conns.closed.Load())
+		}
+	})
+	t.Run("server failure", func(t *testing.T) {
+		f := newProdFixture(t, false)
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(prometheus.NewGauge(prometheus.GaugeOpts{Name: "grpc_server_handled_total", Help: "conflict"}))
+		a, err := assemble(t.Context(), f.cfg, log, reg, okDB, connected(t, f))
+		if a != nil || err == nil {
+			t.Fatal("conflicting server metrics did not abort assembly")
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		if !f.conns.allClosed(ctx) {
+			t.Fatalf("server failure left the user connection open: opened=%d closed=%d", f.conns.opened.Load(), f.conns.closed.Load())
+		}
+	})
 }
