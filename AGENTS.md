@@ -233,8 +233,10 @@ Also:
   Unit, integration and API instrument the identical `./...`, including generated code and `.go` test helpers;
   no exclusions or coverage-ignore annotations. Combined is an informational union, never a substitute.
 - A fresh template without service SQL still runs its migration test on PostgreSQL: assert clean version zero and no application tables, rather than skipping or adding dummy SQL. Nonempty service/library runner fixtures retain their up/down/up integration coverage.
-- Name every test `TestUnit…`, `TestIntegration…` or `TestAPI…` by its actual dependencies. Existing tests are
-  retained in exactly one suite. Direct handler/interceptor calls on fakes are unit, transport/client and actual
+- Name every test `TestUnit…`, `TestIntegration…` or `TestAPI…` by its actual dependencies, and every fuzz target
+  `FuzzUnit…`, `FuzzIntegration…` or `FuzzAPI…` (its seed corpus runs in that suite). `make test-names` rejects
+  any other `Test`/`Fuzz` name and any `Example…`: a service has no public Go API, and an example cannot carry a
+  suite prefix, so it would run outside all three suites. Existing tests are retained in exactly one suite. Direct handler/interceptor calls on fakes are unit, transport/client and actual
   jobs are integration, and full service assembly through the public gRPC API is API. Template API checks health
   and refusal of unknown methods; it is not evidence of a business RPC implementation.
 - `scripts/check-suite.sh` checks Go JSON execution evidence with jq: at least one passing Test and no skipped or
@@ -255,7 +257,7 @@ image publication and deployment remain separate. Existing releases are preserve
 ### Coverage reports (FIN-238)
 
 `make collect-unit`, `collect-integration`, `collect-api` each run `go test -json -race -count=1 -timeout=8m`
-over `./...` with `-coverpkg=./...` and a suite-specific name selector. `unit.out`, `integration.out`, `api.out`
+over `./...` with `-coverpkg=./...` and a suite-specific name selector (`^(Test|Fuzz)<Suite>`). `unit.out`, `integration.out`, `api.out`
 share one production-code denominator. `make check-<suite>` validates execution/profile evidence and invokes
 pinned `go-test-coverage`; `make cover-<suite>` collects then checks. `make cover` collects all three and checks
 all thresholds. `make cover-combined` merges existing profiles using the tool's comma-separated profile option.

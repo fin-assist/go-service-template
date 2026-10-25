@@ -17,11 +17,13 @@
 
 1. Создать репозиторий из шаблона (GitHub → «Use this template»).
 2. Заменить модуль: `go mod edit -module github.com/fin-assist/<service>` и пути импорта (`grep -rl go-service-template | xargs sed -i 's#fin-assist/go-service-template#fin-assist/<service>#g'`).
-3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service`, имя в `compose.yaml`, `Makefile`, `Dockerfile`.
+3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service`, имя в `compose.yaml`, `Makefile` (`BIN`, `build`), `Dockerfile` (путь сборки и бинаря) и `.github/workflows/ci.yml` (job `image`: тег образа).
 4. Заполнить `AccessPolicy()` строками своего сервиса из таблицы grpc-api.md 3.3 и зарегистрировать обработчики в `wire()` (`internal/app/wire.go`).
-5. Сервис с данными пользователей — заменить `NoTombstones` на библиотеку `go-tombstone` (FIN-110); остальные библиотеки — по «Библиотеки и обновления» ниже.
-6. Секреты репозитория: `CLAUDE_CODE_OAUTH_TOKEN` (ревью `@claude`), `GO_MODULES_TOKEN`, если подключаются приватные модули fin-assist. Установить Claude GitHub App и Codex.
-7. Обновить README и `AGENTS.md` под сервис.
+5. Подключить проверку идентичности: шаблон пока не стартует с `AUTH_MODE=verify` (`TODO(FIN-119)` в `internal/app/app.go`, задача подключения в шаблоне — [FIN-273](https://finassist.youtrack.cloud/issue/FIN-273)). До неё — по разделу «Внедрение» README [`go-identity`](https://github.com/fin-assist/go-identity); без этого сервис работает только с `ENV=dev`.
+6. Сервис с данными пользователей — заменить `NoTombstones` на библиотеку `go-tombstone` (FIN-110); остальные библиотеки — по «Библиотеки и обновления» ниже.
+7. Очистить историю шаблона: в `CHANGELOG.md` оставить пустой `## [Unreleased]` (записи шаблона к сервису не относятся); `docs/testing.md` переписать под сценарии сервиса — сейчас там границы и исторические замеры самого шаблона (FIN-238/FIN-246).
+8. Секреты репозитория: `CLAUDE_CODE_OAUTH_TOKEN` (ревью `@claude`), `GO_MODULES_TOKEN`, если подключаются приватные модули fin-assist. Установить Claude GitHub App и Codex.
+9. Обновить README и `AGENTS.md` под сервис.
 
 Перед первым запуском Renovate заменить **оба** `local>` ref в `renovate.json` на новый `fin-assist/<repo>`. GitHub template не копирует служебную ветку: создать собственную `renovate-policy` по [инструкции bootstrap](docs/renovate-policy.md#подготовка-и-включение), затем защитить её и настроить `controllerLogin`, обязательные checks и Environment `renovate-policy` с запуском только из `main` и доступ к organization secret `RENOVATE_POLICY_TOKEN` (выбранный владельцем вариант; новому репозиторию явно проверить доступность секрета). Проверить, что оба presets разрешаются из нового репозитория, а не из шаблона. До проверки оставить `RENOVATE_POLICY_ENABLED` выключенным; секреты, environments и branch protection из шаблона не наследуются.
 
@@ -96,6 +98,8 @@ make lint
 ### Покрытие трёх наборов (FIN-238)
 
 Каждый набор отдельно должен покрывать **80% statements всего модуля**, с согласованным округлением `go-test-coverage v2.20.1`: 79,95% принимается как 80,0%. Результат объединения не компенсирует недостаток отдельного набора. Это замена прежней информационной метрики изменённых строк FIN-210; старые проценты строк с новой метрикой statements напрямую не сравниваются.
+
+Имена проверяет `make test-names` до прогонов: каждый тест — `TestUnit…`/`TestIntegration…`/`TestAPI…`, каждая fuzz-цель — `FuzzUnit…`/`FuzzIntegration…`/`FuzzAPI…` (её seed-корпус выполняется в своём наборе). `Example…` в сервисе отклоняется: публичного Go API у сервиса нет, а префикс набора в имени примера невозможен, и он выполнялся бы вне всех трёх наборов.
 
 - **Unit** — `TestUnit…`: изолированные правила, преобразования и валидация на фейках, без БД и сети.
 - **Integration** — `TestIntegration…`: настоящие PostgreSQL/миграции/транзакции, транспортные клиенты на тестовых серверах, реальные запуски фоновых заданий.
