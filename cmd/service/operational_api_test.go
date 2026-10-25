@@ -21,7 +21,7 @@ import (
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
-	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate/migratetest"
+	migratetest "github.com/fin-assist/go-service-template/internal/testdb"
 )
 
 // The actual binary assembly currently exposes operations and health only. This

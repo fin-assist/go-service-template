@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fin-assist/go-service-template/internal/adapter/postgres/migrate/migratetest"
+	migratetest "github.com/fin-assist/go-service-template/internal/testdb"
 )
 
 func TestUnitServeFailsBeforeConnectingWithoutVerifiers(t *testing.T) {
