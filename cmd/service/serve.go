@@ -64,6 +64,7 @@ type httpLifecycle interface {
 }
 type readinessLoop interface {
 	Watch(context.Context, time.Duration, *slog.Logger, func(context.Context) error, func(bool))
+	Drain()
 }
 type backgroundJobs interface{ Run(context.Context) error }
 type supervisedJobs struct {
@@ -117,6 +118,8 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger, deps servin
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownDelay+cfg.ShutdownTimeout)
 	defer cancel()
+	// HTTP /readyz goes not ready together with gRPC health, before SHUTDOWN_DELAY.
+	deps.readiness.Drain()
 	deps.grpc.Shutdown(shutdownCtx, cfg.ShutdownDelay)
 	stopRun()
 	_ = deps.http.Shutdown(shutdownCtx)
