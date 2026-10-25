@@ -18,7 +18,7 @@ API-тест не добавляет тестовые RPC или строки ac
 
 ## Результат FIN-246 на полном production-знаменателе
 
-Локально, Go1.26.0/darwin-amd64 и PostgreSQL18, `-race -count=1 -timeout=8m`:
+Предварительный локальный прогон, Go1.27.1/darwin-amd64 и PostgreSQL18, `-race -count=1 -timeout=8m`:
 
 | Набор | Native statements | Порог80 |
 |---|---|---|
@@ -27,7 +27,7 @@ API-тест не добавляет тестовые RPC или строки ac
 | API |80.3% (338/421)|PASS|
 | Combined |95.0% (400/421)|Только информация|
 
-Каждый suite действительно выполнен без skipped/failed Test; структуры блоков всех трёх профилей совпадают. Это результат штатного go-test-coverage v2.20.1, а не ручного расчёта. CI на Linux повторяет проверку и сохраняет свои отчёты.
+Каждый suite действительно выполнен без skipped/failed Test; структуры блоков всех трёх профилей совпадают. Это результат штатного go-test-coverage v2.20.1, а не ручного расчёта. Отдельный повтор на точном Go1.26.0 и CI на Linux проверяют целевой compiler и сохраняют свои отчёты.
 
 Содержательные сценарии FIN-246: ошибки/порядок сборки и cleanup пулов при конфликте метрик; owned/foreign transactions и read-primary; CLI usage/configuration/exit status, empty-source migration deployment, drain/shutdown/jobs на unit-фейках; integration файлов конфигурации/логов, HTTP readiness и реальных PostgreSQL транзакций. API вызывает настоящую CLI assembly, проверяет health/reflection/operational HTTP, отказ отсутствующим бизнес-RPC, закрытие при bind failure и переход readiness/health при запрете PostgreSQL-подключений и восстановлении. Задания, SQL и RPC для бизнес-сценариев не добавлены. Unit стадии API harness проверяют IO через маленькие consumer-интерфейсы без сети и БД; integration подтверждает реальную изоляцию БД, конфигураций и очистку ресурсов.
 
