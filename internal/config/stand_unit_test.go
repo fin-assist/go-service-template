@@ -48,7 +48,7 @@ func parseStandUnit(text string) (standUnit, error) {
 		key, value, _ := strings.Cut(line, "=")
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
 		switch key {
-		case "Environment", "EnvironmentFile", "LoadCredential", "SetCredential", "SetCredentialEncrypted":
+		case "Environment", "EnvironmentFile", "LoadCredential", "SetCredential", "SetCredentialEncrypted", "LoadCredentialEncrypted", "ImportCredential":
 			// systemd ignores these keys outside [Service]: the process would not get them.
 			if section != "[Service]" {
 				return unit, fmt.Errorf("unit line %q is in %s, want [Service]", line, section)
@@ -70,6 +70,10 @@ func parseStandUnit(text string) (standUnit, error) {
 			unit.envFiles = append(unit.envFiles, value)
 		case "LoadCredential":
 			name, source, _ := strings.Cut(value, ":")
+			// Reject repeats instead of depending on which source a systemd version keeps.
+			if _, duplicate := unit.credentials[name]; duplicate {
+				return standUnit{}, fmt.Errorf("unit loads credential %s twice", name)
+			}
 			// Each source is this service's file named after its credential (an extension is
 			// allowed): a path left from the template, copied from another unit or with another
 			// name does not exist on the stand or holds a foreign key.
@@ -79,8 +83,9 @@ func parseStandUnit(text string) (standUnit, error) {
 				return unit, fmt.Errorf("LoadCredential=%s reads %q, want %s/%s[.ext]", name, source, standSourceDir, name)
 			}
 			unit.credentials[name] = true
-		case "SetCredential", "SetCredentialEncrypted":
-			return unit, fmt.Errorf("unit line %q: secrets come from files through LoadCredential=, not from the unit text", line)
+		case "SetCredential", "SetCredentialEncrypted", "LoadCredentialEncrypted", "ImportCredential":
+			// These directives share the credential table but bypass the source checks above.
+			return unit, fmt.Errorf("unit line %q: secrets come only from LoadCredential= files", line)
 		}
 	}
 	return unit, scanner.Err()
@@ -253,7 +258,15 @@ func TestUnitStandUnitRejectsMismatches(t *testing.T) {
 		{"secret value with spaced key", []unitEdit{add("Environment = DB_REPLICA_DSN=postgres://app:pw@replica/db")}, "sets secret DB_REPLICA_DSN"},
 		{"primary DSN value", []unitEdit{add("Environment=DB_PRIMARY_DSN=postgres://app:pw@primary/db")}, "sets secret DB_PRIMARY_DSN"},
 		{"unknown variable", []unitEdit{add("Environment=PGPASSWORD=pw")}, "PGPASSWORD, which is not a variable"},
-		{"SetCredential", []unitEdit{add("SetCredential=db-replica-dsn:postgres://app:pw@replica/db")}, "not from the unit text"},
+		{"SetCredential", []unitEdit{add("SetCredential=db-replica-dsn:postgres://app:pw@replica/db")}, "only from LoadCredential"},
+		{"duplicate LoadCredential with a foreign source first", []unitEdit{{dsn, "LoadCredential=db-primary-dsn:/root/db-primary-dsn\n" + dsn}}, "LoadCredential=db-primary-dsn reads"},
+		{"duplicate LoadCredential with valid sources", []unitEdit{{dsn, "LoadCredential=db-primary-dsn:" + standSourceDir + "/db-primary-dsn.txt\n" + dsn}}, "unit loads credential db-primary-dsn twice"},
+		{"identical LoadCredential repeated", []unitEdit{{dsn, dsn + "\n" + dsn}}, "unit loads credential db-primary-dsn twice"},
+		{"SetCredentialEncrypted", []unitEdit{add("SetCredentialEncrypted=db-primary-dsn:encrypted")}, "only from LoadCredential"},
+		{"LoadCredentialEncrypted", []unitEdit{add("LoadCredentialEncrypted=db-primary-dsn:/root/db-primary-dsn")}, "only from LoadCredential"},
+		{"spaced LoadCredentialEncrypted", []unitEdit{add("LoadCredentialEncrypted = db-primary-dsn:/root/db-primary-dsn")}, "only from LoadCredential"},
+		{"ImportCredential", []unitEdit{add("ImportCredential=db-primary-dsn")}, "only from LoadCredential"},
+		{"spaced ImportCredential", []unitEdit{add("ImportCredential = db-primary-dsn")}, "only from LoadCredential"},
 		{"direct DSN path", []unitEdit{{dsn + "\n", ""}, {dsnFile, "Environment=DB_PRIMARY_DSN_FILE=" + standSourceDir + "/db-primary-dsn"}}, "directly, not through LoadCredential"},
 		{"direct signing key path", []unitEdit{
 			{"LoadCredential=stage-signing-key:", "#LoadCredential=stage-signing-key:"},
