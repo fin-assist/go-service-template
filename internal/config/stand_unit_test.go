@@ -23,8 +23,8 @@ const (
 	standServiceName = "service"
 	standUnitFile    = standServiceName + ".service"
 	standCredentials = "/run/credentials/" + standUnitFile
-	standSourceDir   = "/etc/finassist/" + standServiceName + "/"
-	standEnvFile     = standSourceDir + "env"
+	standSourceDir   = "/etc/finassist/" + standServiceName
+	standEnvFile     = standSourceDir + "/env"
 )
 
 func readStandUnit(t *testing.T) standUnit {
@@ -38,22 +38,35 @@ func readStandUnit(t *testing.T) standUnit {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if value, ok := strings.CutPrefix(line, "Environment="); ok {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "[") {
+			continue
+		}
+		// systemd allows spaces around the key's "=" (LoadCredential = a:b).
+		key, value, _ := strings.Cut(line, "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		switch key {
+		case "Environment":
+			// Only the simple form NAME=value is parsed: quotes, several assignments on one line
+			// or escapes (Environment="A=1" B=2) would hide the real names from the checks below.
+			if strings.ContainsAny(value, "\"' \t\\") {
+				t.Fatalf("unit line %q: use the simple form Environment=NAME=value, without quotes, spaces or escapes", line)
+			}
 			name, setting, found := strings.Cut(value, "=")
-			if !found {
+			if !found || name == "" {
 				t.Fatalf("malformed unit line %q", line)
 			}
 			unit.env[name] = strings.ReplaceAll(setting, "%d", standCredentials)
-		}
-		if value, ok := strings.CutPrefix(line, "EnvironmentFile="); ok {
+		case "EnvironmentFile":
 			unit.envFiles = append(unit.envFiles, value)
-		}
-		if value, ok := strings.CutPrefix(line, "LoadCredential="); ok {
+		case "LoadCredential":
 			name, source, _ := strings.Cut(value, ":")
-			// Credential sources are this service's files: a path left from the template or
-			// copied from another unit does not exist on the stand or holds a foreign key.
-			if !strings.HasPrefix(source, standSourceDir) {
-				t.Fatalf("LoadCredential=%s reads %q, want a file under %s", name, source, standSourceDir)
+			// Each source is this service's file named after its credential (an extension is
+			// allowed): a path left from the template, copied from another unit or with another
+			// name does not exist on the stand or holds a foreign key.
+			clean := filepath.Clean(source)
+			base := filepath.Base(clean)
+			if filepath.Dir(clean) != standSourceDir || strings.TrimSuffix(base, filepath.Ext(base)) != name {
+				t.Fatalf("LoadCredential=%s reads %q, want %s/%s[.ext]", name, source, standSourceDir, name)
 			}
 			unit.credentials[name] = true
 		}
@@ -99,9 +112,19 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 			t.Fatalf("unit reads secret %s_FILE=%q directly, not through LoadCredential", v.Name, file)
 		}
 	}
+	used := map[string]bool{}
 	for name, value := range unit.env {
-		if credential, ok := strings.CutPrefix(value, standCredentials+"/"); ok && !unit.credentials[credential] {
-			t.Fatalf("%s names credential %q that the unit does not load", name, credential)
+		if credential, ok := strings.CutPrefix(value, standCredentials+"/"); ok {
+			if !unit.credentials[credential] {
+				t.Fatalf("%s names credential %q that the unit does not load", name, credential)
+			}
+			used[credential] = true
+		}
+	}
+	// And back: a loaded credential no variable reads is a leftover or a typo in the other half.
+	for credential := range unit.credentials {
+		if !used[credential] {
+			t.Fatalf("LoadCredential=%s is not read by any Environment= variable", credential)
 		}
 	}
 	// The env file of the stand: only non-secret settings named in the unit comment. It is
@@ -143,6 +166,10 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 	}
 	if c.Env != EnvStage || c.Auth.Mode != AuthVerify || c.Service != standServiceName {
 		t.Fatalf("stand runs ENV=%s AUTH_MODE=%s SERVICE_NAME=%s, want stage, verify and %s", c.Env, c.Auth.Mode, c.Service, standServiceName)
+	}
+	// The fake puts the credential name into the content: the DSN comes from db-primary-dsn.
+	if want := "postgres://db-primary-dsn/" + standServiceName; c.DB.PrimaryDSN != want {
+		t.Fatalf("DB_PRIMARY_DSN comes from %q, want the credential db-primary-dsn", c.DB.PrimaryDSN)
 	}
 	stage := c.Auth.Identity.Stage
 	if stage.SigningKeyFile != standCredentials+"/stage-signing-key" || stage.PublicKeysFile != "/etc/finassist/stage-public.jwks" ||
