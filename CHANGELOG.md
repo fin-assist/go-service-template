@@ -15,6 +15,7 @@
 
 ### Изменено
 
+- FIN-225: для подключённого contracts/gen/go v0.5.0 описаны выбор разрешения повтора в usecase, передача RequestRetryInfo, границы COMMIT/replay и независимый вложенный Status результата. Шаблон не добавляет бизнес-обработчики, UI-каталог или вывод permission по коду ошибки.
 - FIN-347: версии библиотек в `AGENTS.md`, README и `docs/` приведены к `go.mod`: go-postgres v0.3.0, go-grpc v0.2.0, go-migrate v0.1.1. Только документация: код и поведение шаблона не менялись.
 - FIN-272: `make test-names` проверяет и fuzz-цели (`FuzzUnit…`/`FuzzIntegration…`/`FuzzAPI…`, seed-корпус — в своём наборе) и отклоняет `Example…`, которые выполнялись бы вне трёх наборов покрытия.
 - FIN-274: README — недостающие шаги создания сервиса: identity, очистка `CHANGELOG.md` и `docs/testing.md`, имя образа в CI.
