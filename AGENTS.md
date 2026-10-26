@@ -44,10 +44,10 @@ updates them in the same PR. A service made from the template rewrites the first
 | The whole service in-process for API tests | `internal/app/apitest/` |
 | Entities and invariants (no pgx, gRPC or generated code) | `internal/domain/` |
 | Usecases and the interfaces of repositories and clients they need | `internal/<feature>/` |
-| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.1.0; service wiring — `internal/app/`, `docs/server.md` |
+| Shared gRPC server, client and request context | `github.com/fin-assist/go-grpc/{server,client,reqctx}` v0.2.0; service wiring — `internal/app/`, `docs/server.md` |
 | gRPC handlers (messages ↔ usecases) | `internal/adapter/grpc/<feature>/` |
 | Primary/replica routing, go-postgres.OpenPools/transaction adapter, repositories | `internal/adapter/postgres/`; rules — `docs/migrations.md`, «Запросы на pgx» |
-| Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.1.0; ordered service sources — `internal/app/` |
+| Migration runner and public test harness | `github.com/fin-assist/go-migrate` / `migratetest` v0.1.1; ordered service sources — `internal/app/` |
 | Test PostgreSQL server selection (not runtime business code) | `internal/testdb/`; public migratetest creates/checks databases; counted in every profile |
 | SQL migrations (embedded) | `migrations/`; rules — `docs/migrations.md` |
 | Application-specific peer adapters, when needed | `internal/adapter/client/<peer>/`; shared dialing/token contracts — go-grpc/client |
@@ -67,7 +67,7 @@ requirement. FIN-323: verify is one go-identity `NewAssembly`; any construction 
 the start with no fallback, `ENV=dev` never uses verify, and `App.Close` releases the assembly after jobs stop.
 Identity tests use a probe service in the real go-grpc chain only in `_test.go`; the template policy stays empty.
 Pass the service logger, metric registry and worker clock/restart settings explicitly; library defaults
-are not a substitute for existing service behaviour. go-postgres is pinned at v0.2.0. Paths with <feature>, <peer>
+are not a substitute for existing service behaviour. go-postgres is pinned at v0.3.0. Paths with <feature>, <peer>
 and <job> describe future application code only, not actual empty directories in the template.
 
 The service test entrypoint selects a PostgreSQL18 admin DSN (external server or testcontainer) in internal/testdb.
