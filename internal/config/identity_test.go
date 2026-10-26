@@ -25,14 +25,14 @@ func TestUnitIdentityDefaultsAndOverrides(t *testing.T) {
 	vars["ENV"] = "stage"
 	vars["AUTH_STAGE_ISSUER"] = "https://stage.example"
 	vars["AUTH_STAGE_SIGNING_KEY_FILE"] = "/run/credentials/service/key.pem"
-	vars["AUTH_STAGE_PUBLIC_KEYS_FILE"] = "/etc/finassist/stage-keys.json"
+	vars["AUTH_STAGE_PUBLIC_KEYS_FILE"] = "/etc/finassist/stage-public.jwks"
 	vars["AUTH_KUBERNETES_NAMESPACE"] = "isolated"
 	get, list = env(vars)
 	c, err = load(get, noFiles, list)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Auth.Identity.Stage != (StageIdentity{Issuer: "https://stage.example", SigningKeyFile: "/run/credentials/service/key.pem", PublicKeysFile: "/etc/finassist/stage-keys.json"}) ||
+	if c.Auth.Identity.Stage != (StageIdentity{Issuer: "https://stage.example", SigningKeyFile: "/run/credentials/service/key.pem", PublicKeysFile: "/etc/finassist/stage-public.jwks"}) ||
 		c.Auth.Identity.Kubernetes.Namespace != "isolated" {
 		t.Fatalf("stage overrides: %+v", c.Auth.Identity)
 	}
