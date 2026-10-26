@@ -9,18 +9,22 @@ import (
 )
 
 // standUnit is the settings the example systemd unit of the stand gives the process:
-// active Environment= lines with %d resolved to the credentials directory, and the
-// LoadCredential= names that directory holds.
+// active Environment= lines with %d resolved to the credentials directory, the
+// EnvironmentFile= paths, and the LoadCredential= names that directory holds.
 type standUnit struct {
 	env         map[string]string
+	envFiles    []string
 	credentials map[string]bool
 }
 
-// A service made from the template renames the unit file and these names with it.
+// A service made from the template replaces standServiceName with its own name; the unit
+// file is <service>.service, and the credentials directory follows from it.
 const (
-	standUnitFile    = "service.service"
 	standServiceName = "service"
+	standUnitFile    = standServiceName + ".service"
 	standCredentials = "/run/credentials/" + standUnitFile
+	standEnvFile     = "/etc/finassist/" + standServiceName + "/env"
+	standDSNFile     = standCredentials + "/db-primary-dsn"
 )
 
 func readStandUnit(t *testing.T) standUnit {
@@ -40,6 +44,9 @@ func readStandUnit(t *testing.T) standUnit {
 				t.Fatalf("malformed unit line %q", line)
 			}
 			unit.env[name] = strings.ReplaceAll(setting, "%d", standCredentials)
+		}
+		if value, ok := strings.CutPrefix(line, "EnvironmentFile="); ok {
+			unit.envFiles = append(unit.envFiles, value)
 		}
 		if value, ok := strings.CutPrefix(line, "LoadCredential="); ok {
 			name, _, _ := strings.Cut(value, ":")
@@ -73,14 +80,29 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 	if got := unit.env["AUTH_STAGE_PUBLIC_KEYS_FILE"]; got != "/etc/finassist/stage-public.jwks" {
 		t.Fatalf("unit AUTH_STAGE_PUBLIC_KEYS_FILE=%q, want the shared /etc/finassist/stage-public.jwks", got)
 	}
+	// Every secret file comes through LoadCredential: under DynamicUser a 0600 root file named
+	// directly would not be readable, and readFile below would not notice that.
+	for _, v := range Vars {
+		if !v.Secret {
+			continue
+		}
+		if file, ok := unit.env[v.Name+"_FILE"]; ok && !strings.HasPrefix(file, standCredentials+"/") {
+			t.Fatalf("unit reads secret %s_FILE=%q directly, not through LoadCredential", v.Name, file)
+		}
+	}
 	for name, value := range unit.env {
 		if credential, ok := strings.CutPrefix(value, standCredentials+"/"); ok && !unit.credentials[credential] {
 			t.Fatalf("%s names credential %q that the unit does not load", name, credential)
 		}
 	}
-	// The env file of the stand: only non-secret settings named in the unit comment.
-	envFile := map[string]string{
+	// The env file of the stand: only non-secret settings named in the unit comment. It is
+	// the content of standEnvFile and reaches the process only through that EnvironmentFile=;
+	// a missing directive or the env file of another service is refused.
+	envFiles := map[string]map[string]string{standEnvFile: {
 		"AUTH_STAGE_ISSUER": "stage-services", "AUTH_USER_ISSUER": "https://user.example", "AUTH_USER_AUDIENCE": "finassist", "PEER_USER_ADDR": "dns:///user:9090",
+	}}
+	if len(unit.envFiles) != 1 || unit.envFiles[0] != standEnvFile {
+		t.Fatalf("unit EnvironmentFile=%q, want exactly %s", unit.envFiles, standEnvFile)
 	}
 	// Merge in systemd order: Environment= of the unit first, EnvironmentFile= over it.
 	// An env file that repeated a unit setting would silently replace it, so refuse that.
@@ -88,15 +110,18 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 	for name, value := range unit.env {
 		vars[name] = value
 	}
-	for name, value := range envFile {
-		if _, ok := unit.env[name]; ok {
-			t.Fatalf("the env file would override the unit setting %s", name)
+	for _, path := range unit.envFiles {
+		for name, value := range envFiles[path] {
+			if _, ok := unit.env[name]; ok {
+				t.Fatalf("the env file would override the unit setting %s", name)
+			}
+			vars[name] = value
 		}
-		vars[name] = value
 	}
-	dsnFile := unit.env["DB_PRIMARY_DSN_FILE"]
+	// The DSN exists only as the db-primary-dsn credential: a direct path to the root-owned
+	// source file is unreadable under DynamicUser, so the fake refuses every other path.
 	readFile := func(path string) ([]byte, error) {
-		if path == dsnFile {
+		if path == standDSNFile && unit.credentials["db-primary-dsn"] {
 			return []byte("postgres://primary/" + standServiceName), nil
 		}
 		return noFiles(path)
