@@ -4,8 +4,12 @@
 #
 # Secrets are systemd credentials, not environment variables: they do not show up in
 # "systemctl show" or /proc/<pid>/environ.
-#   /etc/finassist/<service>/env            non-secret settings (see docs/config.md)
+#   /etc/finassist/<service>/env            non-secret settings (see docs/config.md); EnvironmentFile=
+#                                           overrides Environment=, so it must not set what this unit sets
 #   /etc/finassist/<service>/db-primary-dsn DSN, mode 0600, owner root
+#   /etc/finassist/<service>/stage-signing-key.pem  stand signing key, mode 0600, owner root (LoadCredential)
+#   /etc/finassist/stage-public.jwks                stand public JWKS shared by all services, mode 0644
+#                                                   (/etc/finassist 0755): DynamicUser reads it directly
 [Unit]
 Description=fin-assist service
 After=network-online.target postgresql.service
@@ -16,13 +20,18 @@ Type=exec
 ExecStart=/opt/finassist/service/service serve
 EnvironmentFile=/etc/finassist/service/env
 Environment=ENV=stage
+# SERVICE_NAME is the kid/sub of the stand signing key and must match its kid in the shared JWKS.
+# Replace "service" with the name of the new service.
+Environment=SERVICE_NAME=service
 LoadCredential=db-primary-dsn:/etc/finassist/service/db-primary-dsn
 Environment=DB_PRIMARY_DSN_FILE=%d/db-primary-dsn
-# AUTH_MODE=verify on the stand uses stage file keys (FIN-323). The env file sets
-# AUTH_USER_ISSUER, AUTH_USER_AUDIENCE, PEER_USER_ADDR and AUTH_STAGE_ISSUER.
+# With ENV=stage and AUTH_MODE=verify (the default) service identity uses the stand key files
+# (FIN-323, docs/config.md): env must set AUTH_STAGE_ISSUER, as well as AUTH_USER_ISSUER,
+# AUTH_USER_AUDIENCE and PEER_USER_ADDR. Without these files and settings the unit does not start.
 LoadCredential=stage-signing-key:/etc/finassist/service/stage-signing-key.pem
 Environment=AUTH_STAGE_SIGNING_KEY_FILE=%d/stage-signing-key
-Environment=AUTH_STAGE_PUBLIC_KEYS_FILE=/etc/finassist/stage-keys.json
+Environment=AUTH_STAGE_PUBLIC_KEYS_FILE=/etc/finassist/stage-public.jwks
+# ENV=prod (Kubernetes, AUTH_KUBERNETES_* and SERVICE_TOKEN_FILE) is not deployed by this unit.
 
 DynamicUser=yes
 Restart=on-failure
