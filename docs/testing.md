@@ -13,7 +13,7 @@ API-тест не добавляет тестовые RPC или строки ac
 
 ## Выбор PostgreSQL и ownership хелперов
 
-`internal/testdb` выбирает PG18 через `TEST_DATABASE_URL` либо testcontainer и передаёт adminDSN в публичный `go-migrate/migratetest.DSN(t, adminDSN)`. Этот helper создаёт отдельную БД и регистрирует её bounded cleanup; он не читает environment, не запускает container и не удаляет чужую БД. `migratetest.CheckUpDownUp(t, dsn, source)` проверяет переданный источник, не владея lifetime БД. Контракт и примеры — [README go-migrate](https://github.com/fin-assist/go-migrate/tree/v0.1.0); service source и lifetime сервера принадлежат сервису.
+`internal/testdb` выбирает PG18 через `TEST_DATABASE_URL` либо testcontainer и передаёт adminDSN в публичный `go-migrate/migratetest.DSN(t, adminDSN)`. Этот helper создаёт отдельную БД и регистрирует её bounded cleanup; он не читает environment, не запускает container и не удаляет чужую БД. `migratetest.CheckUpDownUp(t, dsn, source)` проверяет переданный источник, не владея lifetime БД. Контракт и примеры — [README go-migrate](https://github.com/fin-assist/go-migrate/tree/v0.1.1); service source и lifetime сервера принадлежат сервису.
 
 `internal/testdb` и `internal/app/apitest` не являются runtime business logic, но их обычные `.go` входят во все три профиля `-coverpkg=./...`. Никакое библиотечное исключение `internal/pgtest` не переносится в сервис. Unit не обращается к БД/сети; классификация сценариев и guards остаются прежними. Актуальные native проценты FIN-246 следует читать из artifact текущего CI; таблица ниже сохранена только как историческое evidence.
 
