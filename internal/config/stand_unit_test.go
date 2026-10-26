@@ -23,8 +23,8 @@ const (
 	standServiceName = "service"
 	standUnitFile    = standServiceName + ".service"
 	standCredentials = "/run/credentials/" + standUnitFile
-	standEnvFile     = "/etc/finassist/" + standServiceName + "/env"
-	standDSNFile     = standCredentials + "/db-primary-dsn"
+	standSourceDir   = "/etc/finassist/" + standServiceName + "/"
+	standEnvFile     = standSourceDir + "env"
 )
 
 func readStandUnit(t *testing.T) standUnit {
@@ -49,7 +49,12 @@ func readStandUnit(t *testing.T) standUnit {
 			unit.envFiles = append(unit.envFiles, value)
 		}
 		if value, ok := strings.CutPrefix(line, "LoadCredential="); ok {
-			name, _, _ := strings.Cut(value, ":")
+			name, source, _ := strings.Cut(value, ":")
+			// Credential sources are this service's files: a path left from the template or
+			// copied from another unit does not exist on the stand or holds a foreign key.
+			if !strings.HasPrefix(source, standSourceDir) {
+				t.Fatalf("LoadCredential=%s reads %q, want a file under %s", name, source, standSourceDir)
+			}
 			unit.credentials[name] = true
 		}
 	}
@@ -86,6 +91,10 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 		if !v.Secret {
 			continue
 		}
+		// A secret value in Environment= shows up in "systemctl show" and /proc/<pid>/environ.
+		if _, ok := unit.env[v.Name]; ok {
+			t.Fatalf("unit sets secret %s in Environment=, not through LoadCredential", v.Name)
+		}
 		if file, ok := unit.env[v.Name+"_FILE"]; ok && !strings.HasPrefix(file, standCredentials+"/") {
 			t.Fatalf("unit reads secret %s_FILE=%q directly, not through LoadCredential", v.Name, file)
 		}
@@ -118,11 +127,12 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 			vars[name] = value
 		}
 	}
-	// The DSN exists only as the db-primary-dsn credential: a direct path to the root-owned
-	// source file is unreadable under DynamicUser, so the fake refuses every other path.
+	// Only the declared credentials are readable: a direct path to a root-owned source file is
+	// unreadable under DynamicUser, so the fake refuses every other path. The secret files
+	// config reads are DSNs.
 	readFile := func(path string) ([]byte, error) {
-		if path == standDSNFile && unit.credentials["db-primary-dsn"] {
-			return []byte("postgres://primary/" + standServiceName), nil
+		if name, ok := strings.CutPrefix(path, standCredentials+"/"); ok && unit.credentials[name] {
+			return []byte("postgres://" + name + "/" + standServiceName), nil
 		}
 		return noFiles(path)
 	}
