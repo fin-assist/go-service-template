@@ -108,21 +108,25 @@ func checkStandUnit(text string) error {
 	if got := unit.env["AUTH_STAGE_PUBLIC_KEYS_FILE"]; got != standPublicJWKS {
 		return fmt.Errorf("unit AUTH_STAGE_PUBLIC_KEYS_FILE=%q, want the shared %s", got, standPublicJWKS)
 	}
+	// secretFiles are the variables naming a file with a secret: <SECRET>_FILE of Vars and the
+	// key and token files, which Vars does not mark Secret because only their path is set.
 	plain, secret := map[string]bool{}, map[string]bool{}
+	secretFiles := map[string]bool{"AUTH_STAGE_SIGNING_KEY_FILE": true, "SERVICE_TOKEN_FILE": true}
 	for _, v := range Vars {
 		if v.Secret {
 			secret[v.Name] = true
+			secretFiles[v.Name+"_FILE"] = true
 		} else {
 			plain[v.Name] = true
 		}
 	}
 	used := map[string]bool{}
 	for name, value := range unit.env {
-		switch base, isFile := strings.CutSuffix(name, "_FILE"); {
+		switch {
 		case secret[name]:
 			// A secret value in Environment= shows up in "systemctl show" and /proc/<pid>/environ.
 			return fmt.Errorf("unit sets secret %s in Environment=, not through LoadCredential", name)
-		case isFile && secret[base]:
+		case secretFiles[name]:
 			// Under DynamicUser a 0600 root file named directly would not be readable.
 			if !strings.HasPrefix(value, standCredentials+"/") {
 				return fmt.Errorf("unit reads secret %s=%q directly, not through LoadCredential", name, value)
@@ -189,7 +193,7 @@ func checkStandUnit(text string) error {
 		return fmt.Errorf("DB_PRIMARY_DSN comes from %q, want the credential db-primary-dsn", c.DB.PrimaryDSN)
 	}
 	stage := c.Auth.Identity.Stage
-	if stage.SigningKeyFile != unit.env["AUTH_STAGE_SIGNING_KEY_FILE"] || stage.PublicKeysFile != standPublicJWKS || stage.Issuer != "stage-services" {
+	if !strings.HasPrefix(stage.SigningKeyFile, standCredentials+"/") || stage.PublicKeysFile != standPublicJWKS || stage.Issuer != "stage-services" {
 		return errors.New("stage identity does not come from the unit and its env file")
 	}
 	return nil
@@ -233,7 +237,8 @@ func TestUnitStandUnitSatisfiesStageIdentity(t *testing.T) {
 }
 
 func TestUnitStandUnitRejectsMismatches(t *testing.T) {
-	const dsn = "LoadCredential=db-primary-dsn:/etc/finassist/service/db-primary-dsn"
+	const dsn = "LoadCredential=db-primary-dsn:" + standSourceDir + "/db-primary-dsn"
+	const serviceName = "Environment=SERVICE_NAME=" + standServiceName
 	const dsnFile = "Environment=DB_PRIMARY_DSN_FILE=%d/db-primary-dsn"
 	tests := []struct {
 		name  string
@@ -243,30 +248,34 @@ func TestUnitStandUnitRejectsMismatches(t *testing.T) {
 		{"quoted assignment", []unitEdit{add(`Environment="DB_REPLICA_DSN=postgres://app:pw@replica/db"`)}, "use the simple form"},
 		{"several assignments", []unitEdit{add("Environment=LOG_LEVEL=info DB_REPLICA_DSN=postgres://app:pw@replica/db")}, "use the simple form"},
 		{"tab between assignments", []unitEdit{add("Environment=LOG_LEVEL=info\tDB_REPLICA_DSN=x")}, "use the simple form"},
-		{"escape", []unitEdit{{"Environment=SERVICE_NAME=service", `Environment=SERVICE_NAME=serv\ice`}}, "use the simple form"},
+		{"escape", []unitEdit{{serviceName, serviceName + `\x`}}, "use the simple form"},
 		{"secret value", []unitEdit{add("Environment=DB_REPLICA_DSN=postgres://app:pw@replica/db")}, "sets secret DB_REPLICA_DSN"},
 		{"secret value with spaced key", []unitEdit{add("Environment = DB_REPLICA_DSN=postgres://app:pw@replica/db")}, "sets secret DB_REPLICA_DSN"},
 		{"primary DSN value", []unitEdit{add("Environment=DB_PRIMARY_DSN=postgres://app:pw@primary/db")}, "sets secret DB_PRIMARY_DSN"},
 		{"unknown variable", []unitEdit{add("Environment=PGPASSWORD=pw")}, "PGPASSWORD, which is not a variable"},
 		{"SetCredential", []unitEdit{add("SetCredential=db-replica-dsn:postgres://app:pw@replica/db")}, "not from the unit text"},
-		{"direct DSN path", []unitEdit{{dsn + "\n", ""}, {dsnFile, "Environment=DB_PRIMARY_DSN_FILE=/etc/finassist/service/db-primary-dsn"}}, "directly, not through LoadCredential"},
+		{"direct DSN path", []unitEdit{{dsn + "\n", ""}, {dsnFile, "Environment=DB_PRIMARY_DSN_FILE=" + standSourceDir + "/db-primary-dsn"}}, "directly, not through LoadCredential"},
+		{"direct signing key path", []unitEdit{
+			{"LoadCredential=stage-signing-key:", "#LoadCredential=stage-signing-key:"},
+			{"AUTH_STAGE_SIGNING_KEY_FILE=%d/stage-signing-key", "AUTH_STAGE_SIGNING_KEY_FILE=" + standSourceDir + "/stage-signing-key.pem"},
+		}, "directly, not through LoadCredential"},
 		{"DSN credential not loaded", []unitEdit{{dsn + "\n", ""}}, `credential "db-primary-dsn" that the unit does not load`},
 		{"DSN from the signing key", []unitEdit{{dsn + "\n", ""}, {dsnFile, "Environment=DB_PRIMARY_DSN_FILE=%d/stage-signing-key"}}, "want the credential db-primary-dsn"},
 		{"DSN file names the signing key", []unitEdit{{dsnFile, "Environment=DB_PRIMARY_DSN_FILE=%d/stage-signing-key"}}, "LoadCredential=db-primary-dsn is not read"},
-		{"source of another service", []unitEdit{{"stage-signing-key:/etc/finassist/service/", "stage-signing-key:/etc/finassist/other/"}}, "LoadCredential=stage-signing-key reads"},
-		{"source with another name", []unitEdit{{dsn, "LoadCredential=db-primary-dsn:/etc/finassist/service/missing-dsn"}}, "LoadCredential=db-primary-dsn reads"},
-		{"source escaping the directory", []unitEdit{{dsn, "LoadCredential=db-primary-dsn:/etc/finassist/service/../other/db-primary-dsn"}}, "LoadCredential=db-primary-dsn reads"},
-		{"credential nobody reads", []unitEdit{add("LoadCredential=jwks:/etc/finassist/service/jwks")}, "LoadCredential=jwks is not read"},
+		{"source of another service", []unitEdit{{"stage-signing-key:" + standSourceDir + "/", "stage-signing-key:" + standSourceDir + "-other/"}}, "LoadCredential=stage-signing-key reads"},
+		{"source with another name", []unitEdit{{dsn, "LoadCredential=db-primary-dsn:" + standSourceDir + "/missing-dsn"}}, "LoadCredential=db-primary-dsn reads"},
+		{"source escaping the directory", []unitEdit{{dsn, "LoadCredential=db-primary-dsn:" + standSourceDir + "/../other/db-primary-dsn"}}, "LoadCredential=db-primary-dsn reads"},
+		{"credential nobody reads", []unitEdit{add("LoadCredential=jwks:" + standSourceDir + "/jwks")}, "LoadCredential=jwks is not read"},
 		{"JWKS through LoadCredential", []unitEdit{add("LoadCredential = jwks:/etc/finassist/stage-public.jwks")}, "LoadCredential=jwks reads"},
 		{"JWKS old path", []unitEdit{{"stage-public.jwks\n", "stage-keys.json\n"}}, "want the shared"},
 		{"signing key not loaded", []unitEdit{{"LoadCredential=stage-signing-key:", "#LoadCredential=stage-signing-key:"}}, `credential "stage-signing-key" that the unit does not load`},
-		{"no EnvironmentFile", []unitEdit{{"EnvironmentFile=/etc/finassist/service/env\n", ""}}, "want exactly /etc/finassist/service/env"},
-		{"two EnvironmentFile", []unitEdit{add("EnvironmentFile=/etc/finassist/service/env.extra")}, "want exactly /etc/finassist/service/env"},
-		{"EnvironmentFile of another service", []unitEdit{{"EnvironmentFile=/etc/finassist/service/env", "EnvironmentFile=/etc/finassist/analytics/env"}}, "want exactly /etc/finassist/service/env"},
+		{"no EnvironmentFile", []unitEdit{{"EnvironmentFile=" + standEnvFile + "\n", ""}}, "want exactly " + standEnvFile},
+		{"two EnvironmentFile", []unitEdit{add("EnvironmentFile=" + standEnvFile + ".extra")}, "want exactly " + standEnvFile},
+		{"EnvironmentFile of another service", []unitEdit{{"EnvironmentFile=" + standEnvFile, "EnvironmentFile=" + standSourceDir + "-other/env"}}, "want exactly " + standEnvFile},
 		{"env file overrides the unit", []unitEdit{add("Environment=AUTH_STAGE_ISSUER=x")}, "would override the unit setting AUTH_STAGE_ISSUER"},
-		{"wrong SERVICE_NAME", []unitEdit{{"Environment=SERVICE_NAME=service", "Environment=SERVICE_NAME=other"}}, `SERVICE_NAME="other"`},
+		{"wrong SERVICE_NAME", []unitEdit{{serviceName, serviceName + "-other"}}, `SERVICE_NAME="` + standServiceName + `-other"`},
 		{"ENV not stage", []unitEdit{{"Environment=ENV=stage\n", "Environment=ENV=prod\n"}}, `ENV="prod"`},
-		{"directive outside [Service]", []unitEdit{{"Environment=SERVICE_NAME=service\n", ""}, {"[Unit]\n", "[Unit]\nEnvironment=SERVICE_NAME=service\n"}}, "is in [Unit], want [Service]"},
+		{"directive outside [Service]", []unitEdit{{serviceName + "\n", ""}, {"[Unit]\n", "[Unit]\n" + serviceName + "\n"}}, "is in [Unit], want [Service]"},
 	}
 	text := readStandUnitText(t)
 	for _, tt := range tests {
@@ -288,13 +297,13 @@ func TestUnitStandUnitAcceptsEquivalentForms(t *testing.T) {
 			{"LoadCredential=db-primary-dsn:", "LoadCredential = db-primary-dsn:"},
 			{"Environment=SERVICE_NAME=", "Environment =SERVICE_NAME="},
 		}},
-		{"source normalised by Clean", []unitEdit{{"db-primary-dsn:/etc/finassist/service/db-primary-dsn", "db-primary-dsn:/etc/finassist/service/./db-primary-dsn"}}},
+		{"source normalised by Clean", []unitEdit{{"db-primary-dsn:" + standSourceDir + "/db-primary-dsn", "db-primary-dsn:" + standSourceDir + "/./db-primary-dsn"}}},
 		{"credential named exactly as its file", []unitEdit{
 			{"LoadCredential=stage-signing-key:", "LoadCredential=stage-signing-key.pem:"},
 			{"AUTH_STAGE_SIGNING_KEY_FILE=%d/stage-signing-key", "AUTH_STAGE_SIGNING_KEY_FILE=%d/stage-signing-key.pem"},
 		}},
 		{"replica DSN credential", []unitEdit{
-			add("LoadCredential=db-replica-dsn:/etc/finassist/service/db-replica-dsn"),
+			add("LoadCredential=db-replica-dsn:" + standSourceDir + "/db-replica-dsn"),
 			add("Environment=DB_REPLICA_DSN_FILE=%d/db-replica-dsn"),
 		}},
 		{"peer address", []unitEdit{add("Environment=PEER_ANALYTICS_ADDR=dns:///127.0.0.1:9093")}},
