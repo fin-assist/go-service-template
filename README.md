@@ -19,7 +19,7 @@
 
 1. Создать репозиторий из шаблона (GitHub → «Use this template»).
 2. Заменить модуль: `go mod edit -module github.com/fin-assist/<service>` и пути импорта (`grep -rl go-service-template | xargs sed -i 's#fin-assist/go-service-template#fin-assist/<service>#g'`).
-3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service`, имя в `compose.yaml`, `Makefile` (`BIN`, `build`, тег в `image`, `SERVICE_NAME` в `run`; DSN локального PostgreSQL — вместе с `compose.yaml`), `Dockerfile` (путь сборки и бинаря) и `.github/workflows/ci.yml` (job `image`: тег образа).
+3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service` (и имя `service` в нём: пути, `Environment=SERVICE_NAME=` — kid/sub ключа подписи стенда, совпадает с `kid` в общем JWKS; константу `standServiceName` в `internal/config/stand_unit_test.go` — имя unit-файла и каталог credentials выводятся из неё), имя в `compose.yaml`, `Makefile` (`BIN`, `build`, тег в `image`, `SERVICE_NAME` в `run`; DSN локального PostgreSQL — вместе с `compose.yaml`), `Dockerfile` (путь сборки и бинаря) и `.github/workflows/ci.yml` (job `image`: тег образа).
 4. Заполнить `AccessPolicy()` строками своего сервиса из таблицы grpc-api.md 3.3 и зарегистрировать обработчики в `wire()` (`internal/app/wire.go`).
 5. Настроить проверку идентичности. `AUTH_MODE=verify` (по умолчанию) собирается через `identity.NewAssembly` из [`go-identity` v0.2.0](https://github.com/fin-assist/go-identity/tree/v0.2.0) ([FIN-323](https://finassist.youtrack.cloud/issue/FIN-323), `internal/app/identity.go`): при `ENV=prod` — токены ServiceAccount Kubernetes, при `ENV=stage` — JWT стенда на ключах из файлов, ключи пользователя — из `user.GetSigningKeys` по `PEER_USER_ADDR`. Задать `AUTH_USER_ISSUER`, `AUTH_USER_AUDIENCE`, `PEER_USER_ADDR` и переменные своего окружения ([docs/config.md](docs/config.md), [docs/server.md](docs/server.md#identity-и-удалённые-пользователи)). Неполная настройка — отказ старта, перехода на dev-режим нет; `AUTH_MODE=insecure-dev` — только с `ENV=dev`. Сам `user` подключает свои ключи локально (`UserKeys` вместо `DialUser`), а не по этой сборке.
 6. Сервис с данными пользователей — заменить `NoTombstones` на библиотеку `go-tombstone` (FIN-110); остальные библиотеки — по «Библиотеки и обновления» ниже.
@@ -63,7 +63,7 @@ make run
 ```
 
 - **Образ** — `Dockerfile`: статический бинарь на distroless, пользователь `nonroot`. Один бинарь: `serve` в Deployment, `migrate up` в Job. Публикация в GHCR — FIN-148.
-- **Стенд** (FIN-149) — тот же бинарь под systemd: пример unit-файла с секретами через `LoadCredential` — [deploy/systemd/service.service](deploy/systemd/service.service). Скрипт деплоя запускает `migrate up` перед перезапуском unit.
+- **Стенд** (FIN-149) — тот же бинарь под systemd: пример unit-файла с секретами через `LoadCredential` — [deploy/systemd/service.service](deploy/systemd/service.service). Unit сам задаёт `ENV=stage`, `SERVICE_NAME` и файлы ключей: DSN и ключ подписи стенда (0600, root) — через `LoadCredential`, общий JWKS стенда `/etc/finassist/stage-public.jwks` (0644, каталог `/etc/finassist` 0755) — напрямую; `EnvironmentFile=` перекрывает `Environment=`, поэтому env-файл не задаёт то, что задаёт unit. Соответствие unit-файла конфигурации проверяет `TestUnitStandUnitSatisfiesStageIdentity` (FIN-349). Скрипт деплоя запускает `migrate up` перед перезапуском unit.
 - **k3s** — манифесты в `fin-assist/infra` (FIN-147): ServiceAccount, projected token, headless Service, пробы `grpc`.
 
 ## Библиотеки и обновления

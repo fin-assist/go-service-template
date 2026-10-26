@@ -8,6 +8,7 @@
 
 ### Исправлено
 
+- FIN-349: пример unit-файла стенда `deploy/systemd/service.service` использует общий JWKS стенда `/etc/finassist/stage-public.jwks` (0644, читается под `DynamicUser` напрямую) вместо `/etc/finassist/stage-keys.json`, сам задаёт `SERVICE_NAME=service` (kid/sub ключа подписи стенда), шапка перечисляет файлы ключей с режимами и предупреждает, что `EnvironmentFile=` перекрывает `Environment=`. Unit-тест `TestUnitStandUnitSatisfiesStageIdentity` загружает конфигурацию из unit-файла, так что сервисы из шаблона получают проверку unit из коробки. Код сервиса не менялся.
 - FIN-269: во время `SHUTDOWN_DELAY` HTTP `/readyz` отвечает 503 вместе с gRPC health `NOT_SERVING`; раньше `/readyz` до конца паузы отвечал 200.
 - FIN-270: `app.New` отказывает в `AUTH_MODE=insecure-dev` вне `ENV=dev` и без `config.Load`; `DB_MAX_CONNS` вне диапазона int32 — ошибка конфигурации, а не молча усечённое значение; глобальное исключение gosec G115 снято, сужающие преобразования снова проверяются линтером.
 - FIN-271: устранена нестабильность интеграционного теста закрытия пулов при конфликте метрик.

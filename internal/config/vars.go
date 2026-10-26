@@ -47,7 +47,7 @@ var Vars = []Var{
 	{Name: "AUTH_STAGE_SIGNING_KEY_FILE", Command: "serve",
 		Doc: "PKCS#8 PEM Ed25519 ключ этого сервиса на стенде (`kid` = `sub` = `SERVICE_NAME`); читается при старте, ротация — перезапуском"},
 	{Name: "AUTH_STAGE_PUBLIC_KEYS_FILE", Command: "serve",
-		Doc: "JWKS публичных ключей сервисов стенда: только OKP Ed25519, `kid` — имя сервиса; читается при старте"},
+		Doc: "JWKS публичных ключей сервисов стенда: только OKP Ed25519, `kid` — имя сервиса; читается при старте. На стенде — один общий файл `/etc/finassist/stage-public.jwks` (0644, каталог 0755), сервис под `DynamicUser` читает его напрямую, без `LoadCredential`"},
 	{Name: "DB_PRIMARY_DSN", Command: "serve", Required: true, Secret: true,
 		Doc: "DSN primary (`-rw`)"},
 	{Name: "DB_REPLICA_DSN", Command: "serve", Secret: true,
