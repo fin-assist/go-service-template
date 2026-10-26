@@ -4,6 +4,8 @@
 
 Шаблон репозитория Go-сервиса «Понятные финансы» ([FIN-117](https://finassist.youtrack.cloud/issue/FIN-117)). Из него создаются `bank-bff`, `user`, `bank-statement-data`, `analytics`, `assistant`. Контракты (`.proto`, сгенерированный код, реестр ошибок `finerr`) — в [`fin-assist/contracts`](https://github.com/fin-assist/contracts), модуль `github.com/fin-assist/contracts/gen/go`.
 
+FIN-225 подключает опубликованный `contracts/gen/go v0.5.0` и правила передачи service-owned `RequestRetryInfo` и вложенного `google.rpc.Status`: [docs/server.md](docs/server.md). Решения о повторе остаются в конкретном usecase; шаблон не добавляет бизнес-RPC, каталог UI-текстов или универсальное разрешение по коду ошибки.
+
 - [docs/server.md](docs/server.md) — gRPC-сервер и интерцепторы, идентичность, таблица доступа, клиенты, транзакции, логи и метрики.
 - [docs/config.md](docs/config.md) — переменные окружения.
 - [docs/migrations.md](docs/migrations.md) — миграции и запросы на pgx ([FIN-115](https://finassist.youtrack.cloud/issue/FIN-115)).

@@ -142,6 +142,14 @@ Priorities when they pull apart, in this order:
   handler may return a `finerr` error wrapped with `%w` or any other error: the interceptor sends the caller the
   unwrapped status or a bare `INTERNAL` (`CANCELLED` / `DEADLINE_EXCEEDED` for context errors) and logs the
   original, so no text of a wrapped error leaves the process (the tagged `go-grpc/server` contract linked from `docs/server.md`).
+- FIN-225 uses tagged contracts/gen/go v0.5.0. Permission to repeat the original RPC is chosen at the
+  actual usecase/refusal phase, independently of HTTP/gRPC status, reason, text and severity. Preserve
+  that explicit advice when mapping the domain error with finerr.WithRequestRetryInfo; do not reuse
+  callback advice after an uncertain COMMIT or infer permission from a saved UUID/cache result.
+  Unknown permission stays absent; BFF combines it with safety of the entire REST request.
+  Nested failed-result Status uses finerr.NewResultStatus/DecodeResultStatus and stays separate from
+  transport failure and new-operation permission. Never add a business RPC, reason allowlist or
+  fallback action to this template merely to demonstrate the common mechanism. See docs/server.md.
 - Identity: the user of a user call is `reqctx.UserID(ctx)` (the verified `sub`), never a request field; a system
   call takes `user_id` from the request. Every new method gets its row in `AccessPolicy()`, copied from
   grpc-api.md 3.3; the server does not start without it.
