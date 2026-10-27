@@ -126,3 +126,7 @@ CI сохраняет обязательный check `go`: он собирает
 Исторический замер FIN-238 до выноса библиотек (24.10.2026, Go1.26.0/PostgreSQL18): unit52.4%, integration69.7%, API46.1%, combined89.2% (1015 statements). В том замере collectors и execution guards прошли без skip, а все три80% критерия были невыполнены. Это не результат сборки FIN-246; её актуальные числа публикует CI текущего commit. Сценарии и точные native per-file границы — [docs/testing.md](docs/testing.md). Пустой service migration source проверяется на PostgreSQL без SQL-пустышек.
 
 Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.
+
+## Артефакты stage
+
+[Получение и проверка бинарей](docs/stage-artifacts.md) (FIN-148): CI извлекает бинарь из проверенного образа, сохраняет SHA и контрольную сумму; фактическая выкладка остаётся FIN-149.
