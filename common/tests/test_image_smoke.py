@@ -52,6 +52,19 @@ class Runner:
 
 
 class ImageSmokeTests(unittest.TestCase):
+    def test_cli_builds_the_caller_sha_and_publishes_the_tested_image_tag(self):
+        for service, fake in [("analytics", "false"), ("assistant", "true"), ("user", "false")]:
+            with self.subTest(service=service), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "github-output"
+                image = ("service" if service == "user" else service) + ":ci"
+                with mock.patch("sys.argv", ["image_smoke.py", "--service", service, "--fake-llm", fake]), \
+                        mock.patch.dict(os.environ, {"GITHUB_SHA": SHA, "CI_REVISION": "b" * 40,
+                                                     "GITHUB_OUTPUT": str(output)}), \
+                        mock.patch.object(IMAGE, "build_images", return_value=image) as build:
+                    IMAGE.main()
+                build.assert_called_once_with(service, fake == "true", SHA)
+                self.assertEqual(output.read_text(), "image_tag=" + image + "\n")
+
     def test_primary_profiles_build_tested_tags_with_source_revision(self):
         for service in sorted(IMAGE.SERVICES):
             with self.subTest(service=service):

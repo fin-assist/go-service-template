@@ -1,9 +1,11 @@
 """Real Git metadata regressions must reject unpinned files without executing filters."""
 import importlib.util
+import marshal
 import os
 from pathlib import Path
 import shlex
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -95,6 +97,41 @@ raise SystemExit(1)
             result = subprocess.run([sys.executable, "-B", "-c", script, bootstrap.__file__, str(cache), revision],
                                     capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_unreadable_extra_directory_cannot_hide_executable_bytecode(self):
+        with tempfile.TemporaryDirectory(prefix="finassist-unreadable-") as directory:
+            parent = Path(directory)
+            cache, revision = self.fixture(parent)
+            renderer = cache / "common/render_lint.py"
+            hidden = renderer.parent / "__pycache__"
+            hidden.mkdir()
+            sentinel = parent / "UNPINNED_BYTECODE_EXECUTED"
+            bytecode = Path(importlib.util.cache_from_source(str(renderer)))
+            info = renderer.stat()
+            payload = compile("from pathlib import Path\nPath(" + repr(str(sentinel)) +
+                              ").write_text('executed')\n", str(renderer), "exec")
+            bytecode.write_bytes(importlib.util.MAGIC_NUMBER +
+                                 struct.pack('<III', 0, int(info.st_mtime), info.st_size) +
+                                 marshal.dumps(payload))
+            hidden.chmod(0o311)
+            try:
+                # Execute/search permission permits opening a known pyc while listing fails.
+                with self.assertRaises(PermissionError):
+                    list(hidden.iterdir())
+                self.assertEqual(bytecode.read_bytes()[:4], importlib.util.MAGIC_NUMBER)
+                rejected = False
+                with mock.patch.object(sys, "dont_write_bytecode", True):
+                    try:
+                        bootstrap.validate_cache(cache, revision)
+                        spec = importlib.util.spec_from_file_location("unreadable_renderer", renderer)
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                    except ValueError:
+                        rejected = True
+                self.assertTrue(rejected, "Incomplete inventory was accepted")
+                self.assertFalse(sentinel.exists(), "Unpinned bytecode executed")
+            finally:
+                hidden.chmod(0o700)
 
 
 if __name__ == "__main__":
