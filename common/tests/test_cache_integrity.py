@@ -98,6 +98,23 @@ raise SystemExit(1)
                                     capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_directory_scan_errors_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix="finassist-scan-error-") as directory:
+            cache, revision = self.fixture(Path(directory))
+            hidden = cache / "common/__pycache__"
+            hidden.mkdir()
+            (hidden / "untracked.pyc").write_bytes(b"untracked")
+            scandir = os.scandir
+
+            def deny_hidden(path):
+                if Path(path) == hidden:
+                    raise PermissionError("Injected directory listing failure")
+                return scandir(path)
+
+            with mock.patch.object(bootstrap.os, "scandir", side_effect=deny_hidden):
+                with self.assertRaisesRegex(ValueError, "cannot be fully enumerated"):
+                    bootstrap.validate_cache(cache, revision)
+
     def test_unreadable_extra_directory_cannot_hide_executable_bytecode(self):
         with tempfile.TemporaryDirectory(prefix="finassist-unreadable-") as directory:
             parent = Path(directory)
@@ -115,9 +132,9 @@ raise SystemExit(1)
                                  marshal.dumps(payload))
             hidden.chmod(0o311)
             try:
-                # Execute/search permission permits opening a known pyc while listing fails.
-                with self.assertRaises(PermissionError):
-                    list(hidden.iterdir())
+                # Ordinary users cannot list this directory but can open a known pyc.
+                # Root can list it and must still reject the extra file; the scan-error
+                # test above exercises onerror independently of the process's privileges.
                 self.assertEqual(bytecode.read_bytes()[:4], importlib.util.MAGIC_NUMBER)
                 rejected = False
                 with mock.patch.object(sys, "dont_write_bytecode", True):
