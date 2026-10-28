@@ -23,7 +23,7 @@
 
 Тонкий workflow потребителя оставляет у себя триггеры, минимальные permissions, явную передачу допустимого секрета и параметры профиля. Общие workflows выполняют Go/coverage, lint, совместимость публичного Go API библиотек, проверку SQL и сборку/проверку образа сервисов. У `assistant` отдельно включается образ fake-LLM, у `bank-bff` сохраняется HTTP smoke. Поведение образов задаётся разрешёнными параметрами, а не произвольной командой из вызывающего репозитория.
 
-`common/versions.json` закрепляет версии линтеров, `common/configs/` хранит эталоны. `common/render_lint.py` получает префикс goimports из `go.mod` и создаёт `.finassist-ci/generated/.golangci.yml` и `.squawk.toml`. У golangci явно задан `relative-path-mode: gomod`: исключения сохраняют смысл после переноса файла в подкаталог. Сгенерированные конфиги и скачанный кэш не редактируют и не коммитят.
+`common/versions.json` закрепляет версии линтеров, `common/configs/` хранит эталоны. `common/render_lint.py` получает префикс goimports из `go.mod` и создаёт `.finassist-ci/generated/.golangci.yml` и `.finassist-ci/generated/.squawk.toml`. У golangci явно задан `relative-path-mode: gomod`: исключения сохраняют смысл после переноса файла в подкаталог. Сгенерированные конфиги и скачанный кэш не редактируют и не коммитят.
 
 ## Карта профилей и осознанных различий
 

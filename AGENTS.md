@@ -56,7 +56,7 @@ updates them in the same PR. A service made from the template rewrites the first
 | Request-scoped values (request ID, caller, user, bank-bff hints) | `github.com/fin-assist/go-grpc/reqctx` |
 | Logger, metrics endpoint, readiness | `internal/logx/`, `internal/ops/` |
 | Image, local run, stand | `Dockerfile`, `compose.yaml`, `Makefile`, `deploy/systemd/` |
-| CI, lint | `.github/workflows/ci.yml`, `.golangci.yml`, `.squawk.toml` |
+| CI, lint | `.github/workflows/ci.yml`, `.finassist-ci.json` (shared source and overrides) |
 | Service versions, release notes and repeatable GitHub Release | `CHANGELOG.md`, `docs/releasing.md`, `.github/workflows/release.yml`, `scripts/changelog.py` |
 | Dependency updates | `renovate.json` |
 | PR review by Claude | `.github/workflows/claude.yml` |
@@ -78,7 +78,7 @@ in all three service profiles; there is no service pgtest exclusion. See docs/te
 
 ### Stack
 
-Versions are in `go.mod` (Go toolchain included), `.github/workflows/ci.yml` and `Makefile` (golangci-lint), `compose.yaml`
+Versions are in `go.mod` (Go toolchain included), `.github/workflows/ci.yml` and `common/versions.json` in the pinned shared CI source (golangci-lint), `compose.yaml`
 and `internal/testdb.DefaultImage` (PostgreSQL). Main pieces: grpc-go, protobuf, protovalidate, pgx v5, golang-migrate,
 prometheus client_golang, testcontainers-go, squawk; the fin-assist libraries above. A new dependency is named in
 the PR with why it is needed.
@@ -113,7 +113,7 @@ Priorities when they pull apart, in this order:
 
 - **No frameworks.** No web or RPC frameworks (gin, echo, fiber, go-kit), no ORM (gorm, ent), no DI containers or
   generators (fx, wire, dig), no config frameworks (viper): the standard library, grpc-go and explicit wiring in
-  `internal/app`. `depguard` in `.golangci.yml` rejects the common ones.
+  `internal/app`. `depguard` in `.finassist-ci/generated/.golangci.yml` rejects the common ones.
 - **Standard library first.** Use `net/http`, `log/slog`, `encoding/json`, `errors`, `testing`, `context`,
   `database/sql` interfaces and the rest of the standard library wherever they do the job; tests use `testing` (no
   testify, gomock). A third-party package only where the standard library has no equivalent — the PostgreSQL driver
@@ -429,3 +429,7 @@ FIN-211: dependency-only Renovate PRs may be merged/closed by the reviewed `reno
 ## Shared CI source (FIN-372)
 
 `common/` and `.github/workflows/shared-*.yml` own reusable Go CI and lint profiles. Read `docs/shared-go-ci.md` before editing them. Preserve per-suite coverage, migration immutability, API compatibility and image/artifact checks. Shared-source tests and real lint probes run in `shared-self.yml`; use process timeouts locally. New services retain source coordinates and remove source-only files instead of copying policy. Privileged release, review and Renovate controller workflows remain local.
+
+## Shared Go CI (FIN-372)
+
+`.finassist-ci.json` pins `fin-assist/go-service-template` by full SHA and declares the lint profile/overrides. CI workflow calls use the same SHA. `make lint`, `make fmt`, `make lint-config` and `make lint-migrations BASE_REF=origin/main` resolve that source with `scripts/common_ci.py`; generated linter configs live in ignored `.finassist-ci/generated/`. Do not restore copied root linter configs. Preserve coverage/test/API/security gates and the bank-statement-data-only smallint exception. Update and rollback all pins in one PR. Details: https://github.com/fin-assist/go-service-template/blob/main/docs/shared-go-ci.md.
