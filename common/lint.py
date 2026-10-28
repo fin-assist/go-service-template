@@ -44,7 +44,7 @@ def main():
     args = parser.parse_args()
     root = args.root.resolve()
     versions = json.loads((COMMON / "versions.json").read_text())
-    run([sys.executable, str(COMMON / "render_lint.py"), "--root", str(root)], root, timeout=30)
+    run([sys.executable, "-B", str(COMMON / "render_lint.py"), "--root", str(root)], root, timeout=30)
     configs = root / ".finassist-ci/generated"
     if args.command == "migrations":
         migrations(root, args.base, configs / ".squawk.toml", versions["squawk"])

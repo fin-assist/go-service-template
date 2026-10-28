@@ -104,10 +104,15 @@ class CacheTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "modifications"):
             bootstrap.validate_cache(cache, revision)
         (cache / "hidden.py").unlink()
-        bootstrap.git(cache, "update-index", "--assume-unchanged", "common/render_lint.py")
-        (cache / "common/render_lint.py").write_text("# injected\n")
-        with self.assertRaisesRegex(ValueError, "hidden index"):
-            bootstrap.validate_cache(cache, revision)
+        for flag, reset in [("--assume-unchanged", "--no-assume-unchanged"),
+                            ("--skip-worktree", "--no-skip-worktree")]:
+            with self.subTest(flag=flag):
+                bootstrap.git(cache, "update-index", flag, "common/render_lint.py")
+                (cache / "common/render_lint.py").write_text("# injected\n")
+                with self.assertRaisesRegex(ValueError, "hidden index"):
+                    bootstrap.validate_cache(cache, revision)
+                bootstrap.git(cache, "update-index", reset, "common/render_lint.py")
+                bootstrap.git(cache, "checkout", "--", "common/render_lint.py")
 
     def test_wrong_commit_or_origin_rejected(self):
         cache, revision = self.fixture()
@@ -115,6 +120,28 @@ class CacheTests(unittest.TestCase):
             bootstrap.validate_cache(cache, "f" * 40)
         bootstrap.git(cache, "remote", "set-url", "origin", "https://example.invalid/other.git")
         with self.assertRaisesRegex(ValueError, "repository"):
+            bootstrap.validate_cache(cache, revision)
+
+    def test_replace_ref_cannot_substitute_the_pinned_commit_tree(self):
+        cache, revision = self.fixture()
+        (cache / "common/render_lint.py").write_text("# injected replacement\n")
+        bootstrap.git(cache, "add", ".")
+        bootstrap.git(cache, "commit", "--quiet", "-m", "Replacement")
+        replacement = bootstrap.git(cache, "rev-parse", "HEAD")
+        bootstrap.git(cache, "checkout", "--quiet", "--detach", revision)
+        bootstrap.git(cache, "replace", revision, replacement)
+        # A normal Git client honors refs/replace and materializes a clean-looking
+        # substitute tree while HEAD still names the approved original commit.
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        def ordinary_git(*args):
+            return subprocess.run(["git", "-c", "core.hooksPath=" + os.devnull, *args],
+                cwd=cache, env=environment, capture_output=True, text=True, check=True, timeout=15).stdout.strip()
+        ordinary_git("reset", "--hard", revision)
+        self.assertEqual(ordinary_git("rev-parse", "HEAD"), revision)
+        self.assertEqual(ordinary_git("status", "--porcelain"), "")
+        self.assertIn("injected", (cache / "common/render_lint.py").read_text())
+        with self.assertRaisesRegex(ValueError, "modifications"):
             bootstrap.validate_cache(cache, revision)
 
     def test_symlink_cache_and_root_rejected(self):
@@ -127,6 +154,21 @@ class CacheTests(unittest.TestCase):
         self.cache_root.symlink_to(self.root, target_is_directory=True)
         with self.assertRaises(ValueError):
             bootstrap.source_dir(self.root, {"revision": revision})
+
+    def test_symlink_git_metadata_and_common_rejected(self):
+        cache, revision = self.fixture()
+        metadata = self.root / "borrowed-metadata"
+        (cache / ".git").rename(metadata)
+        (cache / ".git").symlink_to(metadata, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "Invalid shared CI cache"):
+            bootstrap.validate_cache(cache, revision)
+        (cache / ".git").unlink()
+        metadata.rename(cache / ".git")
+        common = self.root / "borrowed-common"
+        (cache / "common").rename(common)
+        (cache / "common").symlink_to(common, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            bootstrap.validate_cache(cache, revision)
 
     def test_incomplete_source_rejected(self):
         cache, revision = self.fixture()
@@ -198,6 +240,7 @@ class CacheTests(unittest.TestCase):
                 self.assertNotIn("GIT_CONFIG_COUNT", options["env"])
                 self.assertNotIn("GIT_SSL_NO_VERIFY", options["env"])
                 self.assertEqual(options["env"]["GIT_TERMINAL_PROMPT"], "0")
+                self.assertEqual(options["env"]["GIT_NO_REPLACE_OBJECTS"], "1")
 
     def test_git_error_does_not_expose_stderr(self):
         failure = subprocess.CalledProcessError(1, ["git"], stderr="SECRET_VALUE")
