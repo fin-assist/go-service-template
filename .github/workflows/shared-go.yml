@@ -73,6 +73,16 @@ jobs:
         run: python3 -c 'import yaml' || { echo 'PyYAML is required for the script tests (python3-yaml).' >&2; exit 1; }
       - name: Test the scripts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      # The source's existing required go check also gates changes to the shared policy.
+      - name: Shared source regression tests
+        if: github.repository == 'fin-assist/go-service-template'
+        run: python3 -B -m unittest discover -s common/tests -p 'test_*.py'
+      - name: Shared source accepted and rejected lint probes
+        if: github.repository == 'fin-assist/go-service-template'
+        run: python3 -B common/probe_lint.py
+      - name: Shared source workflow syntax
+        if: github.repository == 'fin-assist/go-service-template'
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck='' -pyflakes=''
       - name: CHANGELOG.md format
         run: python3 scripts/changelog.py check
       - name: Collect unit statements coverage
