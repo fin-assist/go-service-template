@@ -76,6 +76,26 @@ class CacheIntegrityTests(unittest.TestCase):
                 bootstrap.validate_cache(cache, revision)
             self.assertFalse(sentinel.exists(), "Cache validation executed an untrusted clean filter")
 
+    def test_replaced_file_fifo_is_rejected_without_blocking(self):
+        with tempfile.TemporaryDirectory(prefix="finassist-fifo-") as directory:
+            cache, revision = self.fixture(Path(directory))
+            renderer = cache / "common/render_lint.py"
+            renderer.unlink()
+            os.mkfifo(renderer)
+            script = '''import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("fifo_bootstrap", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.validate_cache(pathlib.Path(sys.argv[2]), sys.argv[3])
+except ValueError:
+    raise SystemExit(0)
+raise SystemExit(1)
+'''
+            result = subprocess.run([sys.executable, "-B", "-c", script, bootstrap.__file__, str(cache), revision],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
