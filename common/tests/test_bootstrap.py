@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -168,6 +169,37 @@ class CacheTests(unittest.TestCase):
         (cache / "common").rename(common)
         (cache / "common").symlink_to(common, target_is_directory=True)
         with self.assertRaises(ValueError):
+            bootstrap.validate_cache(cache, revision)
+
+    def test_forged_commit_and_tree_objects_rejected(self):
+        cache, revision = self.fixture()
+        commit = bootstrap.git_output(cache, ("cat-file", "commit", revision), False)
+        tree = commit.split(b"\n", 1)[0][5:].decode("ascii")
+        for kind, oid in (("commit", revision), ("tree", tree)):
+            with self.subTest(kind=kind):
+                path = cache / ".git/objects" / oid[:2] / oid[2:]
+                original = path.read_bytes()
+                mode = path.stat().st_mode & 0o777
+                path.chmod(mode | 0o200)
+                data = bootstrap.git_output(cache, ("cat-file", kind, oid), False)
+                changed = data + b"forged\n" if kind == "commit" else data.replace(b"common", b"coMmon", 1)
+                self.assertNotEqual(changed, data)
+                path.write_bytes(zlib.compress(kind.encode() + b" " + str(len(changed)).encode() + b"\0" + changed))
+                try:
+                    with self.assertRaisesRegex(ValueError, "object integrity"):
+                        bootstrap.validate_cache(cache, revision)
+                finally:
+                    path.write_bytes(original)
+                    path.chmod(mode)
+        self.assertEqual(bootstrap.validate_cache(cache, revision), cache / "common")
+
+    def test_tracked_source_symlink_is_not_executed(self):
+        cache, revision = self.fixture()
+        (cache / "common/linked.py").symlink_to("render_lint.py")
+        bootstrap.git(cache, "add", ".")
+        bootstrap.git(cache, "commit", "--quiet", "-m", "Unsupported source link")
+        revision = bootstrap.git(cache, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(ValueError, "regular files"):
             bootstrap.validate_cache(cache, revision)
 
     def test_incomplete_source_rejected(self):
