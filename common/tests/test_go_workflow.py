@@ -33,16 +33,19 @@ def run(script, **environment):
 
 class SharedGoWorkflowTests(unittest.TestCase):
     def test_entrypoints_are_read_only_bounded_reusable_jobs(self):
-        for name in ['shared-go.yml', 'shared-api.yml']:
+        for name in ['shared-go.yml', 'shared-api.yml', 'shared-lint.yml', 'shared-migrations.yml']:
             with self.subTest(workflow=name):
                 workflow = document(name)
                 trigger = workflow.get('on', workflow.get(True))
                 call = trigger['workflow_call']
                 self.assertTrue(call['inputs']['revision']['required'])
                 self.assertEqual(call['inputs']['revision']['type'], 'string')
-                self.assertFalse(call['secrets']['GO_MODULES_TOKEN']['required'])
+                if name == 'shared-migrations.yml':
+                    self.assertNotIn('secrets', call)
+                else:
+                    self.assertFalse(call['secrets']['GO_MODULES_TOKEN']['required'])
                 self.assertEqual(workflow['permissions'], {'contents': 'read'})
-                self.assertEqual(workflow['jobs']['check']['name'], 'check')
+                self.assertEqual(workflow['jobs']['check'].get('name', 'check'), 'check')
                 self.assertGreater(workflow['jobs']['check']['timeout-minutes'], 0)
                 for step in steps(name):
                     self.assertNotIn('${{', step.get('run', ''))
@@ -75,6 +78,28 @@ class SharedGoWorkflowTests(unittest.TestCase):
     def test_api_checker_receives_its_required_pinned_analyzer(self):
         analyzer = document('shared-api.yml')['env']['GORELEASE']
         self.assertRegex(analyzer, r'^golang.org/x/exp/cmd/gorelease@v[0-9].+')
+
+    def test_lint_and_migrations_execute_pin_and_manifest_validation(self):
+        for name in ['shared-lint.yml', 'shared-migrations.yml']:
+            validation = named(name, 'Validate pin')['run']
+            with tempfile.TemporaryDirectory() as directory:
+                manifest = Path(directory) / '.finassist-ci.json'
+                manifest.write_text(json.dumps({'revision': 'a' * 40}))
+                for revision in ['a' * 40, '', 'main', 'a' * 39, 'a' * 41,
+                                 'G' * 40, 'a' * 39 + ';', '$(exit 0)', 'b' * 40]:
+                    with self.subTest(workflow=name, revision=revision):
+                        result = subprocess.run(
+                            ['bash', '-euo', 'pipefail', '-c', validation], cwd=directory,
+                            env={**os.environ, 'SHARED_REVISION': revision},
+                            capture_output=True, text=True, timeout=5)
+                        self.assertEqual(result.returncode == 0, revision == 'a' * 40,
+                                         result.stderr)
+                manifest.write_text('{}')
+                result = subprocess.run(
+                    ['bash', '-euo', 'pipefail', '-c', validation], cwd=directory,
+                    env={**os.environ, 'SHARED_REVISION': 'a' * 40},
+                    capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
 
     def test_analyzers_can_select_their_toolchain_without_changing_test_compiler(self):
         script_tests = named('shared-go.yml', 'Test the scripts')
