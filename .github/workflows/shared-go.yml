@@ -72,6 +72,10 @@ jobs:
       - name: Script dependencies
         run: python3 -c 'import yaml' || { echo 'PyYAML is required for the script tests (python3-yaml).' >&2; exit 1; }
       - name: Test the scripts
+        # setup-go v7 fixes the project compiler with GOTOOLCHAIN=local. Script
+        # fixtures also invoke the independent pinned coverage analyzer (Go >=1.27).
+        env:
+          GOTOOLCHAIN: auto
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       # The source's existing required go check also gates changes to the shared policy.
       - name: Shared source regression tests
@@ -79,6 +83,8 @@ jobs:
         run: python3 -B -m unittest discover -s common/tests -p 'test_*.py'
       - name: Shared source accepted and rejected lint probes
         if: github.repository == 'fin-assist/go-service-template'
+        env:
+          GOTOOLCHAIN: auto
         run: python3 -B common/probe_lint.py
       - name: Shared source workflow syntax
         if: github.repository == 'fin-assist/go-service-template'
@@ -93,6 +99,8 @@ jobs:
         id: check_unit
         if: always() && steps.collect_unit.outcome == 'success'
         continue-on-error: true
+        env:
+          GOTOOLCHAIN: auto
         run: make check-unit
       - name: Collect integration statements coverage
         id: collect_integration
@@ -102,6 +110,8 @@ jobs:
         id: check_integration
         if: always() && steps.collect_integration.outcome == 'success'
         continue-on-error: true
+        env:
+          GOTOOLCHAIN: auto
         run: make check-integration
       - name: Collect api statements coverage
         id: collect_api
@@ -111,9 +121,13 @@ jobs:
         id: check_api
         if: always() && steps.collect_api.outcome == 'success'
         continue-on-error: true
+        env:
+          GOTOOLCHAIN: auto
         run: make check-api
       - name: Combined statements coverage (informational union)
         if: always() && steps.collect_unit.outcome == 'success' && steps.collect_integration.outcome == 'success' && steps.collect_api.outcome == 'success'
+        env:
+          GOTOOLCHAIN: auto
         run: make cover-combined
       - name: Coverage summary
         if: always()

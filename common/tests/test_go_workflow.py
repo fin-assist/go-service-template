@@ -76,6 +76,17 @@ class SharedGoWorkflowTests(unittest.TestCase):
         analyzer = document('shared-api.yml')['env']['GORELEASE']
         self.assertRegex(analyzer, r'^golang.org/x/exp/cmd/gorelease@v[0-9].+')
 
+    def test_analyzers_can_select_their_toolchain_without_changing_test_compiler(self):
+        script_tests = named('shared-go.yml', 'Test the scripts')
+        self.assertEqual(script_tests['env']['GOTOOLCHAIN'], 'auto')
+        for suite in ['unit', 'integration', 'api']:
+            check = named('shared-go.yml', f'Require 80 percent {suite} statements coverage')
+            self.assertEqual(check['env']['GOTOOLCHAIN'], 'auto')
+            collector = named('shared-go.yml', f'Collect {suite} statements coverage')
+            self.assertNotIn('GOTOOLCHAIN', collector.get('env', {}))
+        api = named('shared-api.yml', 'API changes')
+        self.assertEqual(api['env']['GOTOOLCHAIN'], 'auto')
+
     def test_manifest_and_call_cannot_drift_apart(self):
         validation = named('shared-go.yml', 'Match the local source and profile')['run']
         with tempfile.TemporaryDirectory() as directory:

@@ -54,4 +54,6 @@ jobs:
             git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
           fi
       - name: API changes
+        env:
+          GOTOOLCHAIN: auto
         run: python3 scripts/api_check.py
