@@ -425,3 +425,7 @@ FIN-211: dependency-only Renovate PRs may be merged/closed by the reviewed `reno
 ## Stage artifacts (FIN-148)
 
 `scripts/stage_artifact.py` extracts the binary from the smoke-tested image; `docs/stage-artifacts.md` describes provenance, checks and retention. Keep its Python tests and CI image job in sync. Artifacts do not authorize deployment; only a successful main push CI is eligible for stage. GHCR/production delivery is still pending.
+
+## Shared CI source (FIN-372)
+
+`common/` and `.github/workflows/shared-*.yml` own reusable Go CI and lint profiles. Read `docs/shared-go-ci.md` before editing them. Preserve per-suite coverage, migration immutability, API compatibility and image/artifact checks. Shared-source tests and real lint probes run in `shared-self.yml`; use process timeouts locally. New services retain source coordinates and remove source-only files instead of copying policy. Privileged release, review and Renovate controller workflows remain local.

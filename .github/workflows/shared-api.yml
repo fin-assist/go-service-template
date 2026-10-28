@@ -1,0 +1,57 @@
+name: Shared Go API compatibility
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        description: Full SHA of the shared source used by the caller
+        required: true
+        type: string
+    secrets:
+      GO_MODULES_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  GOPRIVATE: github.com/fin-assist/*
+  GORELEASE: golang.org/x/exp/cmd/gorelease@v0.0.0-20261014143641-f0251eb4aa3e
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate shared revision
+        env:
+          SHARED_REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$SHARED_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo 'revision must be a full lowercase commit SHA' >&2; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # API comparison needs tags and release history.
+          persist-credentials: false
+      - name: Match the local library source
+        env:
+          SHARED_REVISION: ${{ inputs.revision }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          config = json.load(open('.finassist-ci.json'))
+          if config['revision'] != os.environ['SHARED_REVISION'] or config['profile'] != 'library':
+              raise SystemExit('Local and CI library source differ')
+          PY
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Access to private modules
+        env:
+          TOKEN: ${{ github.event_name == 'push' && secrets.GO_MODULES_TOKEN || '' }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"
+          fi
+      - name: API changes
+        run: python3 scripts/api_check.py

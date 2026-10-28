@@ -18,7 +18,7 @@
 ## Новый сервис из шаблона
 
 1. Создать репозиторий из шаблона (GitHub → «Use this template»).
-2. Заменить модуль: `go mod edit -module github.com/fin-assist/<service>` и пути импорта (`grep -rl go-service-template | xargs sed -i 's#fin-assist/go-service-template#fin-assist/<service>#g'`).
+2. Заменить модуль: `go mod edit -module github.com/fin-assist/<service>` и пути импорта только в Go-файлах. Координаты общего CI `fin-assist/go-service-template` в workflow, `scripts/common_ci.py`, Renovate и документации не менять; глобальную замену по всему репозиторию не выполнять. Удалить source-only `common/` и `.github/workflows/shared-*.yml`: новый сервис вызывает исходный общий CI, а не публикует его копию.
 3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service` (и имя `service` в нём: пути, `Environment=SERVICE_NAME=` — kid/sub ключа подписи стенда, совпадает с `kid` в общем JWKS; константу `standServiceName` в `internal/config/stand_unit_test.go` — имя unit-файла и каталог credentials выводятся из неё), имя в `compose.yaml`, `Makefile` (`BIN`, `build`, тег в `image`, `SERVICE_NAME` в `run`; DSN локального PostgreSQL — вместе с `compose.yaml`), `Dockerfile` (путь сборки и бинаря) и `.github/workflows/ci.yml` (job `image`: тег образа).
 4. Заполнить `AccessPolicy()` строками своего сервиса из таблицы grpc-api.md 3.3 и зарегистрировать обработчики в `wire()` (`internal/app/wire.go`).
 5. Настроить проверку идентичности. `AUTH_MODE=verify` (по умолчанию) собирается через `identity.NewAssembly` из [`go-identity` v0.2.0](https://github.com/fin-assist/go-identity/tree/v0.2.0) ([FIN-323](https://finassist.youtrack.cloud/issue/FIN-323), `internal/app/identity.go`): при `ENV=prod` — токены ServiceAccount Kubernetes, при `ENV=stage` — JWT стенда на ключах из файлов, ключи пользователя — из `user.GetSigningKeys` по `PEER_USER_ADDR`. Задать `AUTH_USER_ISSUER`, `AUTH_USER_AUDIENCE`, `PEER_USER_ADDR` и переменные своего окружения ([docs/config.md](docs/config.md), [docs/server.md](docs/server.md#identity-и-удалённые-пользователи)). Неполная настройка — отказ старта, перехода на dev-режим нет; `AUTH_MODE=insecure-dev` — только с `ENV=dev`. Сам `user` подключает свои ключи локально (`UserKeys` вместо `DialUser`), а не по этой сборке.
@@ -130,3 +130,7 @@ CI сохраняет обязательный check `go`: он собирает
 ## Артефакты stage
 
 [Получение и проверка бинарей](docs/stage-artifacts.md) (FIN-148): CI извлекает бинарь из проверенного образа, сохраняет SHA и контрольную сумму; фактическая выкладка остаётся FIN-149.
+
+## Источник общих Go-проверок (FIN-372)
+
+`common/` и `.github/workflows/shared-*.yml` — общий источник CI/линтеров для Go-сервисов и библиотек. Потребители подключаются полным SHA, с обновлением и откатом одним PR. [Профили, локальные команды и порядок перехода](docs/shared-go-ci.md).
