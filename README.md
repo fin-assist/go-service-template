@@ -18,13 +18,13 @@
 ## Новый сервис из шаблона
 
 1. Создать репозиторий из шаблона (GitHub → «Use this template»).
-2. Заменить модуль: `go mod edit -module github.com/fin-assist/<service>` и пути импорта (`grep -rl go-service-template | xargs sed -i 's#fin-assist/go-service-template#fin-assist/<service>#g'`).
-3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service` (и имя `service` в нём: пути, `Environment=SERVICE_NAME=` — kid/sub ключа подписи стенда, совпадает с `kid` в общем JWKS; константу `standServiceName` в `internal/config/stand_unit_test.go` — имя unit-файла и каталог credentials выводятся из неё), имя в `compose.yaml`, `Makefile` (`BIN`, `build`, тег в `image`, `SERVICE_NAME` в `run`; DSN локального PostgreSQL — вместе с `compose.yaml`), `Dockerfile` (путь сборки и бинаря) и `.github/workflows/ci.yml` (job `image`: тег образа).
+2. Заменить модуль: `go mod edit -module github.com/fin-assist/<service>` и пути импорта только в Go-файлах. Координаты общего CI `fin-assist/go-ci` в workflow, `scripts/common_ci.py`, Renovate и документации не менять; глобальную замену по всему репозиторию не выполнять. Общий CI не копируется: он находится в отдельном `fin-assist/go-ci`.
+3. Переименовать `cmd/service` → `cmd/<service>`, `deploy/systemd/service.service` (и имя `service` в нём: пути, `Environment=SERVICE_NAME=` — kid/sub ключа подписи стенда, совпадает с `kid` в общем JWKS; константу `standServiceName` в `internal/config/stand_unit_test.go` — имя unit-файла и каталог credentials выводятся из неё), имя в `compose.yaml`, `Makefile` (`BIN`, `build`, тег в `image`, `SERVICE_NAME` в `run`; DSN локального PostgreSQL — вместе с `compose.yaml`), `Dockerfile` (путь сборки и бинаря) и `.github/workflows/ci.yml` (`image-check.with.service`: имя бинаря). Для нового имени сервиса сначала отдельным source PR добавить его в разрешённые image-профили общего CI, затем обновить source SHA; произвольные команды через параметры не передаются.
 4. Заполнить `AccessPolicy()` строками своего сервиса из таблицы grpc-api.md 3.3 и зарегистрировать обработчики в `wire()` (`internal/app/wire.go`).
 5. Настроить проверку идентичности. `AUTH_MODE=verify` (по умолчанию) собирается через `identity.NewAssembly` из [`go-identity` v0.2.0](https://github.com/fin-assist/go-identity/tree/v0.2.0) ([FIN-323](https://finassist.youtrack.cloud/issue/FIN-323), `internal/app/identity.go`): при `ENV=prod` — токены ServiceAccount Kubernetes, при `ENV=stage` — JWT стенда на ключах из файлов, ключи пользователя — из `user.GetSigningKeys` по `PEER_USER_ADDR`. Задать `AUTH_USER_ISSUER`, `AUTH_USER_AUDIENCE`, `PEER_USER_ADDR` и переменные своего окружения ([docs/config.md](docs/config.md), [docs/server.md](docs/server.md#identity-и-удалённые-пользователи)). Неполная настройка — отказ старта, перехода на dev-режим нет; `AUTH_MODE=insecure-dev` — только с `ENV=dev`. Сам `user` подключает свои ключи локально (`UserKeys` вместо `DialUser`), а не по этой сборке.
 6. Сервис с данными пользователей — заменить `NoTombstones` на библиотеку `go-tombstone` (FIN-110); остальные библиотеки — по «Библиотеки и обновления» ниже.
 7. Очистить историю шаблона: в `CHANGELOG.md` оставить пустой `## [Unreleased]` (записи шаблона к сервису не относятся); `docs/testing.md` переписать под сценарии сервиса — сейчас там границы и исторические замеры самого шаблона (FIN-238/FIN-246).
-8. Секреты репозитория: `CLAUDE_CODE_OAUTH_TOKEN` (ревью `@claude`), `GO_MODULES_TOKEN`, если подключаются приватные модули fin-assist. Установить Claude GitHub App и Codex.
+8. Секреты репозитория: `CLAUDE_CODE_OAUTH_TOKEN` (ревью `@claude`), `GO_MODULES_TOKEN` для чтения приватных модулей только в доверенном push CI. PR-профили работают без этого секрета; приватные зависимости потребуют отдельно согласованного доверенного процесса. Установить Claude GitHub App и Codex.
 9. Обновить README и `AGENTS.md` под сервис.
 
 Перед первым запуском Renovate заменить **оба** `local>` ref в `renovate.json` на новый `fin-assist/<repo>`. GitHub template не копирует служебную ветку: создать собственную `renovate-policy` по [инструкции bootstrap](docs/renovate-policy.md#подготовка-и-включение), затем защитить её и настроить `controllerLogin`, обязательные checks и Environment `renovate-policy` с запуском только из `main` и доступ к organization secret `RENOVATE_POLICY_TOKEN` (выбранный владельцем вариант; новому репозиторию явно проверить доступность секрета). Проверить, что оба presets разрешаются из нового репозитория, а не из шаблона. До проверки оставить `RENOVATE_POLICY_ENABLED` выключенным; секреты, environments и branch protection из шаблона не наследуются.
@@ -86,7 +86,7 @@ CI (`.github/workflows/ci.yml`):
 | Job | Что |
 |---|---|
 | `go` | `go mod tidy` без изменений, `go vet`, `go test -race` с PostgreSQL 18 в Docker (testcontainers), включая «вверх → вниз → вверх» для миграций; тесты скриптов; отдельные обязательные total80 для unit/integration/API; combined дополнительно, отчёты и профили в artifacts |
-| `lint` | golangci-lint (`.golangci.yml`), в том числе `forbidigo` против обхода `finerr` и `depguard` против фреймворков, ORM и DI-контейнеров |
+| `lint` | golangci-lint (`.finassist-ci/generated/.golangci.yml`), в том числе `forbidigo` против обхода `finerr` и `depguard` против фреймворков, ORM и DI-контейнеров |
 | `image` | сборка образа и запуск бинаря в нём |
 | `migrations` (PR) | существующие миграции не изменены, squawk по новым |
 
@@ -125,8 +125,17 @@ CI сохраняет обязательный check `go`: он собирает
 
 Исторический замер FIN-238 до выноса библиотек (24.10.2026, Go1.26.0/PostgreSQL18): unit52.4%, integration69.7%, API46.1%, combined89.2% (1015 statements). В том замере collectors и execution guards прошли без skip, а все три80% критерия были невыполнены. Это не результат сборки FIN-246; её актуальные числа публикует CI текущего commit. Сценарии и точные native per-file границы — [docs/testing.md](docs/testing.md). Пустой service migration source проверяется на PostgreSQL без SQL-пустышек.
 
-Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`.
+Модули `github.com/fin-assist/*` берутся из git, минуя прокси (`GOPRIVATE`, задан в `Makefile` и CI). Для приватного — токен с чтением репозиториев fin-assist: локально `git config --global url."https://x-access-token:<token>@github.com/fin-assist/".insteadOf "https://github.com/fin-assist/"`, в доверенном push CI — секрет `GO_MODULES_TOKEN`, в `docker build` — секрет `netrc`. В PR, включая same-repo PR, токен не передаётся: все текущие зависимости публичные. Одного добавления секрета недостаточно для проверки приватных зависимостей на PR; такая модель доступа согласуется отдельно.
 
 ## Артефакты stage
 
 [Получение и проверка бинарей](docs/stage-artifacts.md) (FIN-148): CI извлекает бинарь из проверенного образа, сохраняет SHA и контрольную сумму; фактическая выкладка остаётся FIN-149.
+
+
+## Общий Go CI и линтеры (FIN-372)
+
+`.finassist-ci.json` закрепляет общий источник полным SHA и объявляет профиль/исключения. CI вызывает reusable workflows того же SHA; `make lint`, `make fmt`, `make lint-config` и `make lint-migrations BASE_REF=origin/main` используют его через `scripts/common_ci.py`. Конфигурации создаются в игнорируемом `.finassist-ci/generated/`; локальные копии правил не редактируются. Первый локальный вызов требует доступ к GitHub. Обновление workflow и manifest pin приходит одним PR Renovate; откат возвращает прежние SHA вместе. [Источник, профили, обновление и откат](https://github.com/fin-assist/go-ci/blob/main/docs/shared-go-ci.md). Проверки тестов/coverage, PostgreSQL 18, race и совместимость сохраняются.
+
+Если source bootstrap изменился, в том же PR синхронизируйте `scripts/common_ci.py` с `common/bootstrap.py` выбранного SHA. Renovate меняет pins, но не эту копию; несовпадение блокирует consumer contract. При откате возвращайте согласованные pins и копию bootstrap.
+
+Сервисный шаблон — обычный потребитель; общий код и его self-tests находятся в `fin-assist/go-ci`. При откате первоначального переноса возвращайте прежние координаты источника, pins и соответствующую копию bootstrap вместе.
