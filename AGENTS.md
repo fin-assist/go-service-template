@@ -433,3 +433,5 @@ FIN-211: dependency-only Renovate PRs may be merged/closed by the reviewed `reno
 ## Shared Go CI (FIN-372)
 
 `.finassist-ci.json` pins `fin-assist/go-service-template` by full SHA and declares the lint profile/overrides. CI workflow calls use the same SHA. `make lint`, `make fmt`, `make lint-config` and `make lint-migrations BASE_REF=origin/main` resolve that source with `scripts/common_ci.py`; generated linter configs live in ignored `.finassist-ci/generated/`. Do not restore copied root linter configs. Preserve coverage/test/API/security gates and the bank-statement-data-only smallint exception. Update and rollback all pins in one PR. Details: https://github.com/fin-assist/go-service-template/blob/main/docs/shared-go-ci.md.
+
+If the pinned bootstrap changes, synchronize `scripts/common_ci.py` byte-for-byte with that source `common/bootstrap.py` in the same PR. Renovate updates pins only; the consumer contract rejects a stale copy. Rollback restores both matching pins and bootstrap. A human follow-up commit is not eligible for bot-only FIN-211 auto-merge.

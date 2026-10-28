@@ -138,3 +138,5 @@ CI сохраняет обязательный check `go`: он собирает
 ## Общий Go CI и линтеры (FIN-372)
 
 `.finassist-ci.json` закрепляет общий источник полным SHA и объявляет профиль/исключения. CI вызывает reusable workflows того же SHA; `make lint`, `make fmt`, `make lint-config` и `make lint-migrations BASE_REF=origin/main` используют его через `scripts/common_ci.py`. Конфигурации создаются в игнорируемом `.finassist-ci/generated/`; локальные копии правил не редактируются. Первый локальный вызов требует доступ к GitHub. Обновление workflow и manifest pin приходит одним PR Renovate; откат возвращает прежние SHA вместе. [Источник, профили, обновление и откат](https://github.com/fin-assist/go-service-template/blob/main/docs/shared-go-ci.md). Проверки тестов/coverage, PostgreSQL 18, race и совместимость сохраняются.
+
+Если source bootstrap изменился, в том же PR синхронизируйте `scripts/common_ci.py` с `common/bootstrap.py` выбранного SHA. Renovate меняет pins, но не эту копию; несовпадение блокирует consumer contract. При откате возвращайте согласованные pins и копию bootstrap.
