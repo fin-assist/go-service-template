@@ -2,6 +2,8 @@
 
 Шаблон предоставляет CLI `serve`/`migrate`, HTTP operational endpoints, gRPC health/reflection и инфраструктурные компоненты для будущих сервисов. Его `AccessPolicy()` пуст, `wire()` не регистрирует бизнес-RPC, исходящих клиентов или заданий. `AUTH_MODE=verify` собирается через `go-identity` `NewAssembly` (FIN-323). В `MigrationSources()` пока только service source без SQL.
 
+FIN-433: unit проверяет безопасный отказ неверного DSN; integration — отмену зависшего подключения и Ping с освобождением соединений; API — команду `serve` без внешнего deadline: отказ зависшего Ping, код 1, отсутствие секретов в ошибке и закрытые listeners. Тестовая TCP-сторона воспроизводит остановку PostgreSQL wire protocol, не имитируя SQL/транзакции. Учитывается штатная очистка pgx до 15 секунд после startup deadline 10 секунд. `scripts/test_image_toolchain.py` сверяет точный компилятор Docker с `go.mod` и запрет автоматического переключения toolchain; сборку образа подтверждает image CI.
+
 ## Границы проверок после FIN-246
 
 - Unit: изолированные сервисные валидаторы, конфигурация и routing/assembly contracts; неизвестная CLI-команда отвергается как usage, некорректные migration sources отклоняются конкретной ошибкой до попытки соединения с БД.
