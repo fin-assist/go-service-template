@@ -62,9 +62,11 @@ make up
 make run
 ```
 
-- **Образ** — `Dockerfile`: статический бинарь на distroless, пользователь `nonroot`. Один бинарь: `serve` в Deployment, `migrate up` в Job. Публикация в GHCR — FIN-148.
+- **Образ** — `Dockerfile`: статический бинарь на distroless, пользователь `nonroot`. Компилятор закреплён на точной версии `go` из `go.mod`, как в Go CI; `GOTOOLCHAIN=local` запрещает автоматическую смену компилятора. Согласованность проверяет `scripts/test_image_toolchain.py`. При повышении Go обновляются обе версии. Один бинарь: `serve` в Deployment, `migrate up` в Job. Публикация в GHCR — FIN-148.
 - **Стенд** (FIN-149) — тот же бинарь под systemd: пример unit-файла с секретами через `LoadCredential` — [deploy/systemd/service.service](deploy/systemd/service.service). Unit сам задаёт `ENV=stage`, `SERVICE_NAME` и файлы ключей: DSN и ключ подписи стенда (0600, root) — через `LoadCredential`, общий JWKS стенда `/etc/finassist/stage-public.jwks` (0644, каталог `/etc/finassist` 0755) — напрямую; `EnvironmentFile=` перекрывает `Environment=`, поэтому env-файл не задаёт то, что задаёт unit. Соответствие unit-файла конфигурации проверяет `TestUnitStandUnitSatisfiesStageIdentity` (FIN-349). Проверка отклоняет повтор имени `LoadCredential=`, а также `SetCredential=`, `SetCredentialEncrypted=`, `LoadCredentialEncrypted=` и `ImportCredential=`: секреты unit получает только из явно проверенных файлов `LoadCredential=` (FIN-351). Скрипт деплоя запускает `migrate up` перед перезапуском unit.
 - **k3s** — манифесты в `fin-assist/infra` (FIN-147): ServiceAccount, projected token, headless Service, пробы `grpc`.
+
+До открытия listeners `postgres.Open` ограничивает подключение и стартовый Ping primary десятью секундами; более ранняя отмена или deadline вызывающего сохраняется. При ошибке закрываются пулы: незавершённые подключения отменяются, очистка зависшего установленного соединения в pgx может занять ещё до 15 секунд (всего до 25 секунд плюс планирование). Процесс завершается с кодом 1. Успешный пул продолжает работать; таймауты запросов и миграций не меняются.
 
 ## Библиотеки и обновления
 

@@ -5,6 +5,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -26,6 +27,11 @@ type Querier interface {
 // Options configures the shared pool lifecycle.
 type Options = pgstore.PoolOptions
 
+// startupTimeout bounds pool acquisition and the initial primary Ping, before
+// operational listeners exist. Failed pools are then closed; pgx may take another
+// fifteen seconds to clean up an unresponsive established connection.
+const startupTimeout = 10 * time.Second
+
 // DB holds the pool on the primary (-rw) and the pool on the replicas (-ro). On the stand
 // both DSNs point to one PostgreSQL; with an empty replica DSN one pool serves both.
 type DB struct {
@@ -35,8 +41,10 @@ type DB struct {
 	transactions *pgstore.Manager
 }
 
-// Open creates the pools and checks that the primary answers.
+// Open creates the pools and checks the primary within a bounded startup budget.
 func Open(ctx context.Context, o Options) (*DB, error) {
+	ctx, cancel := context.WithTimeout(ctx, startupTimeout)
+	defer cancel()
 	pools, err := pgstore.OpenPools(ctx, o)
 	if err != nil {
 		return nil, err

@@ -78,6 +78,13 @@ in all three service profiles; there is no service pgtest exclusion. See docs/te
 
 ### Stack
 
+FIN-433: Docker's builder compiler must match the exact `go` version in `go.mod` used by shared Go CI.
+Keep `GOTOOLCHAIN=local` in the image and update both versions together; scripts/test_image_toolchain.py guards drift.
+The PostgreSQL adapter bounds pool acquisition and the initial primary Ping to ten seconds, preserving earlier
+caller cancellation/deadlines. Failed startup closes owned pools: pending connects are canceled; pgx cleanup of
+an unresponsive established connection can take another fifteen seconds (up to twenty-five seconds plus scheduling).
+Successful pools remain usable after startup; request/readiness/migration timeouts are separate.
+
 Versions are in `go.mod` (Go toolchain included), `.github/workflows/ci.yml` and `common/versions.json` in the pinned shared CI source (golangci-lint), `compose.yaml`
 and `internal/testdb.DefaultImage` (PostgreSQL). Main pieces: grpc-go, protobuf, protovalidate, pgx v5, golang-migrate,
 prometheus client_golang, testcontainers-go, squawk; the fin-assist libraries above. A new dependency is named in
